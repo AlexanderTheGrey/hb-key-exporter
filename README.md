@@ -1,4 +1,4 @@
-# HumbleBundle Key Exporter
+# Humble Bundle Key Exporter
 
 ![License](https://img.shields.io/badge/License-MIT-blue)
 ![GitHub Release](https://img.shields.io/github/v/release/mrmarble/hb-key-exporter)
@@ -14,7 +14,7 @@ Userscript to assist in key management for Humble Bundle games.
 - Advanced filtering options
 - Export in various formats:
   - CSV (all data)
-  - ASF (`<name> <key>`)
+  - ASF (`<name><TAB><key>`)
   - TXT (`<key>`)
 - Reveal hidden keys
 - Create Gift links
@@ -29,9 +29,9 @@ Userscript to assist in key management for Humble Bundle games.
 
 ## Usage
 
-Go to Humble Bundle [keys page](https://www.humblebundle.com/home/keys), open the collapsible menu by clicking on the `Advanced Exporter` at the top of the main section.
+Go to Humble Bundle [keys page](https://www.humblebundle.com/home/keys), open the collapsible menu by clicking on the `Advanced Exporter` button at the top of the main section.
 
->[!NOTE]
+> [!NOTE]
 > You need to be signed in to Steam for some of the features to work, such as showing purchase dates and claiming keys.
 
 ## Troubleshooting
