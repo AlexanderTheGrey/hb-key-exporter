@@ -6,11 +6,11 @@
   "private": true,
   "downloadURL": "https://github.com/MrMarble/hb-key-exporter/releases/latest/download/hb-key-exporter.user.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.18.0"
   },
   "scripts": {
     "prepare": "husky",
-    "dev": "rollup -wc",
+    "dev": "rollup -wc --no-watch.clearScreen",
     "clean": "del-cli dist",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
@@ -57,11 +57,11 @@
     "typescript-eslint": "^8.32.0"
   },
   "lint-staged": {
-    "*.{ts,tsx}": [
+    "*.{js,mjs,cjs,ts,tsx}": [
       "eslint --fix",
       "prettier --write"
     ],
-    "*.css": [
+    "*.{css,json,md,yml,yaml}": [
       "prettier --write"
     ]
   },

@@ -1,0 +1,8 @@
+min_version = "2026.7.5"
+
+[settings]
+lockfile = true
+
+[tools]
+node = { version = "24.18.0" }
+pnpm = { version = "10.34.5" }
