@@ -1,5 +1,12 @@
-import { createSignal, type Accessor } from 'solid-js'
+import { createSignal, onCleanup, Show, type Accessor } from 'solid-js'
 import type { Api } from 'datatables.net-dt'
+import {
+  createClaimPlan,
+  type ClaimFailure,
+  type ClaimPlan,
+  type ClaimReport,
+  type ClaimSuccess,
+} from '../claim-report'
 import { forEachConcurrent } from '../concurrency'
 import {
   hasSearchBuilderCriteria,
@@ -8,45 +15,47 @@ import {
 } from '../table-filter'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
 import { copyToClipboard, redeem, showErrorToast, showFlashToast, type Product } from '../util'
+import { BulkRevealConfirmation, BulkRevealResults } from './BulkRevealDialogs'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
 
 const CLAIM_CONCURRENCY = 4
 
-type ClaimFailure = {
-  index: number
-  product: Product
-  error: unknown
+type PendingConfirmation = {
+  plan: ClaimPlan<Product>
+  gift: boolean
+  resolve: (confirmed: boolean) => void
 }
-
-const getErrorMessage = (error: unknown): string =>
-  error instanceof Error
-    ? error.message || 'Failed to reveal key'
-    : error == null
-      ? 'Failed to reveal key'
-      : String(error)
 
 const claimProducts = async (
   products: Product[],
   gift: boolean
-): Promise<{ failures: ClaimFailure[]; updated: Set<Product> }> => {
-  const claimable = products.filter((product) => !hasRedeemedKeyValue(product.redeemed_key_val))
-  const failures: ClaimFailure[] = []
+): Promise<{
+  successes: ClaimSuccess<Product>[]
+  failures: ClaimFailure<Product>[]
+  updated: Set<Product>
+}> => {
+  const successes: ClaimSuccess<Product>[] = []
+  const failures: ClaimFailure<Product>[] = []
   const updated = new Set<Product>()
-  await forEachConcurrent(claimable, CLAIM_CONCURRENCY, async (product, index) => {
+
+  await forEachConcurrent(products, CLAIM_CONCURRENCY, async (product, index) => {
     try {
       product.redeemed_key_val = await redeem(product, gift)
       product.type = gift ? 'Gift' : 'Key'
       product.is_gift = gift
       updated.add(product)
+      successes.push({ index, product })
     } catch (error) {
       console.error('Error redeeming product:', product.machine_name, error)
       failures.push({ index, product, error })
     }
   })
 
+  successes.sort((left, right) => left.index - right.index)
   failures.sort((left, right) => left.index - right.index)
-  return { failures, updated }
+
+  return { successes, failures, updated }
 }
 
 const exportASF = (products: Product[]): string =>
@@ -108,25 +117,29 @@ const exportCSV = (products: Product[], delimiter: string): string => {
   ].join('\r\n')
 }
 
-const formatClaimFailures = (failures: ClaimFailure[], gift: boolean): string => {
-  const item = gift ? 'gift link' : 'key'
-  const action = gift ? 'created' : 'revealed'
-
-  return [
-    `Exported to clipboard, but ${failures.length} ${item}${
-      failures.length === 1 ? '' : 's'
-    } could not be ${action}:`,
-    ...failures.map(({ product, error }) => `• ${product.human_name}: ${getErrorMessage(error)}`),
-  ].join('\n')
-}
-
 export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
   const [exportType, setExportType] = createSignal('csv')
-  const [filtered, setFiltered] = createSignal(true)
   const [claim, setClaim] = createSignal(false)
   const [claimType, setClaimType] = createSignal('key')
   const [exporting, setExporting] = createSignal(false)
   const [separator, setSeparator] = createSignal(',')
+  const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(
+    null
+  )
+  const [claimReport, setClaimReport] = createSignal<ClaimReport<Product> | null>(null)
+
+  const finishConfirmation = (confirmed: boolean): void => {
+    const pending = pendingConfirmation()
+    if (!pending) return
+
+    setPendingConfirmation(null)
+    pending.resolve(confirmed)
+  }
+
+  const confirmBulkReveal = (plan: ClaimPlan<Product>, gift: boolean): Promise<boolean> =>
+    new Promise((resolve) => setPendingConfirmation({ plan, gift, resolve }))
+
+  onCleanup(() => finishConfirmation(false))
 
   const invertFilter = (): void => {
     const table = dt()
@@ -155,21 +168,35 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
     setExporting(true)
 
     try {
-      const toExport = table
-        .rows({ search: filtered() ? 'applied' : 'none' })
-        .data()
-        .toArray() as Product[]
-
+      const toExport = table.rows({ search: 'applied' }).data().toArray() as Product[]
       const claimAsGift = claimType() === 'gift'
-      const { failures, updated } = claim()
-        ? await claimProducts(toExport, claimAsGift)
-        : { failures: [], updated: new Set<Product>() }
+      const claimable = claim()
+        ? toExport.filter((product) => !hasRedeemedKeyValue(product.redeemed_key_val))
+        : []
+      let report: ClaimReport<Product> | null = null
 
-      if (updated.size) {
-        table
-          .rows((_index, product) => updated.has(product))
-          .invalidate('data')
-          .draw(false)
+      if (claimable.length) {
+        const plan = createClaimPlan(claimable)
+        const confirmed = await confirmBulkReveal(plan, claimAsGift)
+        if (!confirmed) return
+
+        const { successes, failures, updated } = await claimProducts(claimable, claimAsGift)
+
+        if (updated.size) {
+          table
+            .rows((_index, product) => updated.has(product))
+            .invalidate('data')
+            .draw(false)
+        }
+
+        report = {
+          gift: claimAsGift,
+          successes,
+          failures,
+          typeCounts: plan.typeCounts,
+          keylessCount: plan.keylessCount,
+          exportCopied: false,
+        }
       }
 
       const delimiter = separator() || ','
@@ -179,12 +206,11 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           : exportType() === 'keys'
             ? exportKeys(toExport)
             : exportCSV(toExport, delimiter)
+      const exportCopied = copyToClipboard(text)
 
-      if (!copyToClipboard(text)) return
-
-      if (failures.length) {
-        showErrorToast(formatClaimFailures(failures, claimAsGift))
-      } else {
+      if (report) {
+        setClaimReport({ ...report, exportCopied })
+      } else if (exportCopied) {
         showFlashToast('Exported to clipboard')
       }
     } catch (error) {
@@ -219,7 +245,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
             checked={claim()}
             onChange={(event) => setClaim(event.target.checked)}
           />
-          Claim unredeemed games
+          Reveal unrevealed keys
         </label>
         <select
           name="claimType"
@@ -245,16 +271,6 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
         >
           Invert filter
         </button>
-        <label for="filtered">
-          <input
-            type="checkbox"
-            id="filtered"
-            name="filtered"
-            checked={filtered()}
-            onChange={(event) => setFiltered(event.target.checked)}
-          />
-          Use table filter
-        </label>
         <select
           name="export"
           id="export"
@@ -275,6 +291,21 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           {exporting() ? <i class="hb hb-spin hb-spinner"></i> : 'Export'}
         </button>
       </div>
+
+      <Show when={pendingConfirmation()} keyed>
+        {(pending) => (
+          <BulkRevealConfirmation
+            plan={pending.plan}
+            gift={pending.gift}
+            onCancel={() => finishConfirmation(false)}
+            onConfirm={() => finishConfirmation(true)}
+          />
+        )}
+      </Show>
+
+      <Show when={claimReport()} keyed>
+        {(report) => <BulkRevealResults report={report} onClose={() => setClaimReport(null)} />}
+      </Show>
     </>
   )
 }

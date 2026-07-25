@@ -43,6 +43,7 @@ export interface Product {
   category_human_name: string
   human_name: string
   key_type: string
+  direct_redeem: boolean
   type: 'Key' | 'Gift' | ''
   redeemed_key_val: RedeemedKeyValue | ''
   is_gift: boolean
@@ -324,6 +325,7 @@ export const getProducts = (
         category_human_name: order.product.human_name || '',
         human_name: product.human_name || product.machine_name || '',
         key_type: product.key_type || '',
+        direct_redeem: product.direct_redeem || false,
         type: product.is_gift ? 'Gift' : redeemedKey ? 'Key' : '',
         redeemed_key_val: redeemedKey,
         is_gift: product.is_gift || false,
