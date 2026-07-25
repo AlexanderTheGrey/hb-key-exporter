@@ -1,6 +1,9 @@
 import { onCleanup, onMount, type Accessor, type Setter } from 'solid-js'
+import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
+import { restoreTableState, type TableState } from '../table-state'
 import {
   clearSteamSupportNotice,
+  copyToClipboard,
   redeem,
   fetchRedeemedDate,
   setRedeemedDate,
@@ -18,10 +21,14 @@ export function Table({
   products,
   steamId,
   setDt,
+  initialState,
+  onStateRestored,
 }: {
   products: Product[]
   steamId: Accessor<string | null>
-  setDt: Setter<Api<Product>>
+  setDt: Setter<Api<Product> | null>
+  initialState?: TableState | null
+  onStateRestored?: () => void
 }) {
   let tableRef!: HTMLTableElement
 
@@ -147,6 +154,9 @@ export function Table({
     /** Steam Support URL for a given appId */
     const steamSupportUrl = (appId: number) =>
       `https://help.steampowered.com/en/wizard/HelpWithGame?appid=${appId}`
+
+    const steamRegistrationUrl = (key: string): string =>
+      `https://store.steampowered.com/account/registerkey?key=${encodeURIComponent(key)}`
 
     const searchDateKey = (value: string): string => {
       const s = value.trim()
@@ -296,7 +306,8 @@ export function Table({
             },
             {
               title: 'Revealed',
-              data: (row: Product) => (row.is_gift || row.redeemed_key_val ? 'Yes' : 'No'),
+              data: (row: Product) =>
+                row.is_gift || hasRedeemedKeyValue(row.redeemed_key_val) ? 'Yes' : 'No',
               type: 'string-utf8',
               render: (data, type) => displayYesNoBadge(data, type, styles.warning_badge),
             },
@@ -416,7 +427,7 @@ export function Table({
               data: (row: Product) => {
                 const actions = []
 
-                if (row.redeemed_key_val) {
+                if (hasRedeemedKeyValue(row.redeemed_key_val)) {
                   actions.push(
                     hm(
                       'button',
@@ -425,8 +436,9 @@ export function Table({
                         title: 'Copy to clipboard',
                         type: 'button',
                         onclick: () => {
-                          navigator.clipboard.writeText(row.redeemed_key_val)
-                          showFlashToast('Copied to clipboard')
+                          if (copyToClipboard(serializeRedeemedKeyValue(row.redeemed_key_val))) {
+                            showFlashToast('Copied to clipboard')
+                          }
                         },
                       },
                       hm('i', { class: 'hb hb-key hb-clipboard' })
@@ -434,13 +446,18 @@ export function Table({
                   )
                 }
 
-                if (row.redeemed_key_val && !row.is_gift && row.key_type === 'steam') {
+                if (
+                  typeof row.redeemed_key_val === 'string' &&
+                  row.redeemed_key_val &&
+                  !row.is_gift &&
+                  row.key_type === 'steam'
+                ) {
                   actions.push(
                     hm(
                       'a',
                       {
                         class: styles.btn,
-                        href: `https://store.steampowered.com/account/registerkey?key=${row.redeemed_key_val}`,
+                        href: steamRegistrationUrl(row.redeemed_key_val),
                         target: '_blank',
                       },
                       hm('i', { class: 'hb hb-shopping-cart-light', title: 'Redeem' })
@@ -448,7 +465,12 @@ export function Table({
                   )
                 }
 
-                if (row.redeemed_key_val && row.is_gift && !row.is_expired) {
+                if (
+                  typeof row.redeemed_key_val === 'string' &&
+                  row.redeemed_key_val &&
+                  row.is_gift &&
+                  !row.is_expired
+                ) {
                   actions.push(
                     hm(
                       'a',
@@ -462,7 +484,7 @@ export function Table({
                   )
                 }
 
-                if (!row.redeemed_key_val && !row.is_gift && !row.is_expired) {
+                if (!hasRedeemedKeyValue(row.redeemed_key_val) && !row.is_gift && !row.is_expired) {
                   actions.push(
                     hm(
                       'button',
@@ -472,8 +494,14 @@ export function Table({
                         onclick: async () => {
                           try {
                             const key = await redeem(row)
-                            await navigator.clipboard.writeText(key)
-                            showFlashToast('Key copied to clipboard')
+                            row.redeemed_key_val = key
+                            row.type = 'Key'
+                            dt.rows((_index, product) => product === row)
+                              .invalidate('data')
+                              .draw(false)
+                            if (copyToClipboard(serializeRedeemedKeyValue(key))) {
+                              showFlashToast('Key copied to clipboard')
+                            }
                           } catch (error) {
                             showErrorToast(error)
                           }
@@ -489,8 +517,15 @@ export function Table({
                         onclick: async () => {
                           try {
                             const link = await redeem(row, true)
-                            await navigator.clipboard.writeText(link)
-                            showFlashToast('Link copied to clipboard')
+                            row.redeemed_key_val = link
+                            row.type = 'Gift'
+                            row.is_gift = true
+                            dt.rows((_index, product) => product === row)
+                              .invalidate('data')
+                              .draw(false)
+                            if (copyToClipboard(serializeRedeemedKeyValue(link))) {
+                              showFlashToast('Link copied to clipboard')
+                            }
                           } catch (error) {
                             showErrorToast(error)
                           }
@@ -520,6 +555,16 @@ export function Table({
           },
         }))
     )
+
+    if (initialState) {
+      try {
+        restoreTableState(dt, initialState)
+      } catch (error) {
+        showErrorToast(error, 'Failed to restore table filters')
+      } finally {
+        onStateRestored?.()
+      }
+    }
 
     const container = dt.table().container() as HTMLElement
 
@@ -620,6 +665,7 @@ export function Table({
       for (const warning of warnings) warning.element.remove()
 
       dt.destroy()
+      setDt((current) => (current === dt ? null : current))
     })
   })
   console.debug('Table Loaded')

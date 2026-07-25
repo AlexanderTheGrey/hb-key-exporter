@@ -1,4 +1,5 @@
 import LZString from 'lz-string'
+import { hasRedeemedKeyValue, type RedeemedKeyValue } from './redeemed-key'
 
 export interface Order {
   created: string
@@ -17,7 +18,7 @@ export interface Order {
       is_gift: boolean
       key_type: string
       keyindex: number
-      redeemed_key_val?: string
+      redeemed_key_val?: RedeemedKeyValue
       steam_app_id?: number | null
       sold_out?: boolean
       direct_redeem?: boolean
@@ -43,7 +44,7 @@ export interface Product {
   human_name: string
   key_type: string
   type: 'Key' | 'Gift' | ''
-  redeemed_key_val: string
+  redeemed_key_val: RedeemedKeyValue | ''
   is_gift: boolean
   is_expired: boolean
   owned: 'Yes' | 'No' | ''
@@ -312,6 +313,10 @@ export const getProducts = (
             : 'No'
         : ''
 
+      const redeemedKey = hasRedeemedKeyValue(product.redeemed_key_val)
+        ? product.redeemed_key_val
+        : ''
+
       return {
         machine_name: product.machine_name || '',
         category: getCategory(order.product.category),
@@ -319,8 +324,8 @@ export const getProducts = (
         category_human_name: order.product.human_name || '',
         human_name: product.human_name || product.machine_name || '',
         key_type: product.key_type || '',
-        type: product.is_gift ? 'Gift' : product.redeemed_key_val ? 'Key' : '',
-        redeemed_key_val: product.redeemed_key_val || '',
+        type: product.is_gift ? 'Gift' : redeemedKey ? 'Key' : '',
+        redeemed_key_val: redeemedKey,
         is_gift: product.is_gift || false,
         is_expired: isExpired,
         expiry_date: expiry,
@@ -337,25 +342,55 @@ export const getProducts = (
   )
 }
 
-export const redeem = async (product: Product, gift = false): Promise<string> => {
-  const data = await fetch('https://www.humblebundle.com/humbler/redeemkey', {
+type RedeemResponse = {
+  success?: boolean
+  error_msg?: string
+  error?: string
+  giftkey?: unknown
+  key?: unknown
+}
+
+export const redeem = async (product: Product, gift = false): Promise<RedeemedKeyValue> => {
+  if (product.keyindex == null) throw new Error('Missing Humble key index')
+
+  const body = new URLSearchParams({
+    keytype: product.machine_name,
+    key: product.category_id,
+    keyindex: String(product.keyindex),
+  })
+
+  if (gift) body.set('gift', 'true')
+
+  const response = await fetch('https://www.humblebundle.com/humbler/redeemkey', {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     },
-    body: `keytype=${product.machine_name}&key=${product.category_id}&keyindex=${product.keyindex}${gift ? '&gift=true' : ''}`,
+    body,
     method: 'POST',
     mode: 'cors',
-  }).then((res) => res.json())
+  })
+  let data: RedeemResponse
 
-  if (!data?.success) {
-    throw new Error(data?.error_msg || data?.error || 'Failed to reveal key')
+  try {
+    data = (await response.json()) as RedeemResponse
+  } catch {
+    throw new Error(`Humble returned an invalid response (HTTP ${response.status})`)
+  }
+
+  if (!response.ok || !data.success) {
+    throw new Error(
+      data.error_msg || data.error || `Failed to reveal key (HTTP ${response.status})`
+    )
   }
 
   const value = gift ? data.giftkey : data.key
-  if (!value) throw new Error('Failed to reveal key')
+  if (!hasRedeemedKeyValue(value)) throw new Error('Failed to reveal key')
 
-  return gift ? `https://www.humblebundle.com/gift?key=${value}` : value
+  if (!gift) return value
+  if (typeof value !== 'string') throw new Error('Humble returned an invalid gift key')
+
+  return `https://www.humblebundle.com/gift?key=${value}`
 }
 
 type SteamUserData = {
@@ -537,6 +572,16 @@ export const showErrorToast = (error: unknown, fallback = 'Failed'): void => {
     error instanceof Error ? error.message || fallback : error == null ? fallback : String(error)
 
   showFlashToast(message, 'error')
+}
+
+export function copyToClipboard(text: string): boolean {
+  try {
+    GM_setClipboard(text, 'text/plain')
+    return true
+  } catch (error) {
+    showErrorToast(error, 'Failed to copy to clipboard')
+    return false
+  }
 }
 
 type SteamNoticeLink = {

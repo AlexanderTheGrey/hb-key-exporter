@@ -91,7 +91,8 @@
 }
 
 .hb_extractor-flash-toast_flash {
-  animation: hb_extractor-flash-toast-flash 700ms ease-out;
+  animation: hb_extractor-flash-toast-flash 700ms ease-out both;
+  transform-origin: center;
 }
 
 #hb_extractor-container details {
