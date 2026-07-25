@@ -18,7 +18,7 @@ const inverseConditions: Record<string, string> = {
   '!ends': 'ends',
   '!null': 'null',
   '!starts': 'starts',
-  // Table.tsx defines date “>” as on-or-after, making it the exact inverse of “<”.
+  // Table.tsx defines date ">" as on-or-after, making it the exact inverse of "<".
   '<': '>',
   '=': '!=',
   '>': '<',
@@ -29,10 +29,15 @@ const inverseConditions: Record<string, string> = {
   starts: '!starts',
 }
 
-const isGroup = (value: SearchBuilderCriterion | SearchBuilderGroup): value is SearchBuilderGroup =>
-  Array.isArray(value.criteria)
+const isGroup = (value: unknown): value is SearchBuilderGroup =>
+  value !== null &&
+  typeof value === 'object' &&
+  Array.isArray((value as Partial<SearchBuilderGroup>).criteria)
 
-export const hasSearchBuilderCriteria = (group: SearchBuilderGroup): boolean =>
+export const hasSearchBuilderCriteria = (
+  group: Partial<SearchBuilderGroup> | null | undefined
+): group is SearchBuilderGroup =>
+  Array.isArray(group?.criteria) &&
   group.criteria.some((criterion) =>
     isGroup(criterion)
       ? hasSearchBuilderCriteria(criterion)
@@ -49,7 +54,7 @@ export const invertSearchBuilderGroup = (group: SearchBuilderGroup): SearchBuild
 
     const condition = inverseConditions[criterion.condition]
     if (!condition) {
-      throw new Error(`The “${criterion.condition}” filter condition cannot be inverted.`)
+      throw new Error(`The "${criterion.condition}" filter condition cannot be inverted.`)
     }
 
     return { ...criterion, condition }

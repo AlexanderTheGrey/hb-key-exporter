@@ -19,7 +19,7 @@ import { BulkRevealConfirmation, BulkRevealResults } from './BulkRevealDialogs'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
 
-const CLAIM_CONCURRENCY = 4
+const CLAIM_CONCURRENCY = 5
 
 type PendingConfirmation = {
   plan: ClaimPlan<Product>
@@ -29,7 +29,8 @@ type PendingConfirmation = {
 
 const claimProducts = async (
   products: Product[],
-  gift: boolean
+  gift: boolean,
+  onProgress?: (completed: number) => void
 ): Promise<{
   successes: ClaimSuccess<Product>[]
   failures: ClaimFailure<Product>[]
@@ -38,6 +39,7 @@ const claimProducts = async (
   const successes: ClaimSuccess<Product>[] = []
   const failures: ClaimFailure<Product>[] = []
   const updated = new Set<Product>()
+  let completed = 0
 
   await forEachConcurrent(products, CLAIM_CONCURRENCY, async (product, index) => {
     try {
@@ -49,6 +51,8 @@ const claimProducts = async (
     } catch (error) {
       console.error('Error redeeming product:', product.machine_name, error)
       failures.push({ index, product, error })
+    } finally {
+      onProgress?.(++completed)
     }
   })
 
@@ -122,24 +126,39 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
   const [claim, setClaim] = createSignal(false)
   const [claimType, setClaimType] = createSignal('key')
   const [exporting, setExporting] = createSignal(false)
+  const [bulkRevealProcessing, setBulkRevealProcessing] = createSignal(false)
+  const [bulkRevealProgress, setBulkRevealProgress] = createSignal(0)
   const [separator, setSeparator] = createSignal(',')
   const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(
     null
   )
   const [claimReport, setClaimReport] = createSignal<ClaimReport<Product> | null>(null)
 
-  const finishConfirmation = (confirmed: boolean): void => {
+  const cancelConfirmation = (): void => {
+    if (bulkRevealProcessing()) return
+
     const pending = pendingConfirmation()
     if (!pending) return
 
     setPendingConfirmation(null)
-    pending.resolve(confirmed)
+    pending.resolve(false)
   }
 
-  const confirmBulkReveal = (plan: ClaimPlan<Product>, gift: boolean): Promise<boolean> =>
-    new Promise((resolve) => setPendingConfirmation({ plan, gift, resolve }))
+  const confirmReveal = (): void => {
+    const pending = pendingConfirmation()
+    if (!pending || bulkRevealProcessing()) return
 
-  onCleanup(() => finishConfirmation(false))
+    setBulkRevealProcessing(true)
+    pending.resolve(true)
+  }
+
+  const confirmBulkReveal = (plan: ClaimPlan<Product>, gift: boolean): Promise<boolean> => {
+    setBulkRevealProcessing(false)
+    setBulkRevealProgress(0)
+    return new Promise((resolve) => setPendingConfirmation({ plan, gift, resolve }))
+  }
+
+  onCleanup(() => pendingConfirmation()?.resolve(false))
 
   const invertFilter = (): void => {
     const table = dt()
@@ -150,7 +169,14 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
       const details = searchBuilder.getDetails(true)
 
       if (!hasSearchBuilderCriteria(details)) {
-        throw new Error('Add at least one table filter before inverting it.')
+        const hasTextSearch =
+          Boolean(table.search()) || table.columns().search().toArray().some(Boolean)
+
+        throw new Error(
+          hasTextSearch
+            ? 'Invert filter only supports conditions created with "Add Condition"; text searches cannot be inverted.'
+            : 'Add at least one condition with "Add Condition" before inverting the filter.'
+        )
       }
 
       searchBuilder.rebuild(invertSearchBuilderGroup(details), false)
@@ -180,7 +206,11 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
         const confirmed = await confirmBulkReveal(plan, claimAsGift)
         if (!confirmed) return
 
-        const { successes, failures, updated } = await claimProducts(claimable, claimAsGift)
+        const { successes, failures, updated } = await claimProducts(
+          claimable,
+          claimAsGift,
+          setBulkRevealProgress
+        )
 
         if (updated.size) {
           table
@@ -209,6 +239,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
       const exportCopied = copyToClipboard(text)
 
       if (report) {
+        setPendingConfirmation(null)
         setClaimReport({ ...report, exportCopied })
       } else if (exportCopied) {
         showFlashToast('Exported to clipboard')
@@ -216,6 +247,8 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
     } catch (error) {
       showErrorToast(error, 'Export failed')
     } finally {
+      setPendingConfirmation(null)
+      setBulkRevealProcessing(false)
       setExporting(false)
     }
   }
@@ -237,7 +270,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
         </label>
       </div>
       <div class={styles.actions}>
-        <label for="claim">
+        <label for="claim" class={styles.checkbox_label}>
           <input
             type="checkbox"
             id="claim"
@@ -267,7 +300,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           class={styles.btn}
           onClick={invertFilter}
           disabled={!dt() || exporting()}
-          title="Replace the current advanced filter with its logical opposite"
+          title="Invert conditions created with Add Condition"
         >
           Invert filter
         </button>
@@ -288,7 +321,11 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           onClick={exportToClipboard}
           disabled={!dt() || !exportType() || exporting()}
         >
-          {exporting() ? <i class="hb hb-spin hb-spinner"></i> : 'Export'}
+          {exporting() && !pendingConfirmation() && !bulkRevealProcessing() ? (
+            <i class="hb hb-spin hb-spinner"></i>
+          ) : (
+            'Export'
+          )}
         </button>
       </div>
 
@@ -297,8 +334,10 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           <BulkRevealConfirmation
             plan={pending.plan}
             gift={pending.gift}
-            onCancel={() => finishConfirmation(false)}
-            onConfirm={() => finishConfirmation(true)}
+            processing={bulkRevealProcessing}
+            progress={bulkRevealProgress}
+            onCancel={cancelConfirmation}
+            onConfirm={confirmReveal}
           />
         )}
       </Show>

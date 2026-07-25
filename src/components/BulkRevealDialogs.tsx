@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js'
+import { For, onCleanup, onMount, Show, type Accessor } from 'solid-js'
 import {
   formatClaimLog,
   getClaimTypeLabel,
@@ -14,14 +14,30 @@ import styles from '../style.module.css'
 const pluralize = (count: number, singular: string, plural = `${singular}s`): string =>
   count === 1 ? singular : plural
 
+const useEscapeKey = (onEscape: () => void, disabled?: Accessor<boolean>): void => {
+  const handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || disabled?.()) return
+
+    event.preventDefault()
+    onEscape()
+  }
+
+  onMount(() => document.addEventListener('keydown', handleKeyDown))
+  onCleanup(() => document.removeEventListener('keydown', handleKeyDown))
+}
+
 export function BulkRevealConfirmation({
   plan,
   gift,
+  processing,
+  progress,
   onCancel,
   onConfirm,
 }: {
   plan: ClaimPlan<Product>
   gift: boolean
+  processing: Accessor<boolean>
+  progress: Accessor<number>
   onCancel: () => void
   onConfirm: () => void
 }) {
@@ -37,18 +53,20 @@ export function BulkRevealConfirmation({
         'your Humble Bundle account; they will not produce transferable keys.',
       ].join(' ')
 
+  useEscapeKey(onCancel, processing)
+
   return (
     <div
       class={styles.modal_backdrop}
       role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && onCancel()}
-      onKeyDown={(event) => event.key === 'Escape' && onCancel()}
+      onMouseDown={(event) => event.target === event.currentTarget && !processing() && onCancel()}
     >
       <section
         class={styles.modal}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-confirm-title"
+        aria-busy={processing()}
         tabindex="-1"
       >
         <header class={styles.modal_header}>
@@ -64,6 +82,7 @@ export function BulkRevealConfirmation({
             aria-label="Cancel"
             title="Cancel"
             onClick={onCancel}
+            disabled={processing()}
           >
             ×
           </button>
@@ -91,6 +110,30 @@ export function BulkRevealConfirmation({
             </div>
           </div>
 
+          <Show when={processing()}>
+            <div class={styles.modal_progress}>
+              <div class={styles.modal_progress_header}>
+                <span>{gift ? 'Creating gift links' : 'Revealing keys'}</span>
+                <strong>
+                  {progress()} of {count}
+                </strong>
+              </div>
+              <div
+                class={styles.modal_progress_track}
+                role="progressbar"
+                aria-label={gift ? 'Gift-link creation progress' : 'Key reveal progress'}
+                aria-valuemin="0"
+                aria-valuemax={count}
+                aria-valuenow={progress()}
+              >
+                <div
+                  class={styles.modal_progress_bar}
+                  style={{ width: `${Math.round((progress() / count) * 100)}%` }}
+                ></div>
+              </div>
+            </div>
+          </Show>
+
           <div class={styles.type_breakdown}>
             <h3>Type breakdown</h3>
             <ul>
@@ -116,15 +159,39 @@ export function BulkRevealConfirmation({
             </div>
           </Show>
 
-          <p class={styles.modal_note}>Nothing will be revealed or exported unless you confirm.</p>
+          <p class={styles.modal_note} aria-live="polite">
+            {processing()
+              ? 'Keep this window open while the reveal and export complete.'
+              : 'Nothing will be revealed or exported unless you confirm.'}
+          </p>
         </div>
 
         <footer class={styles.modal_footer}>
-          <button type="button" class={styles.modal_secondary_button} onClick={onCancel}>
+          <button
+            type="button"
+            class={styles.modal_secondary_button}
+            onClick={onCancel}
+            disabled={processing()}
+          >
             Cancel
           </button>
-          <button type="button" class={styles.modal_primary_button} onClick={onConfirm} autofocus>
-            {gift ? 'Create & Export' : 'Reveal & Export'}
+          <button
+            type="button"
+            class={styles.modal_primary_button}
+            onClick={onConfirm}
+            disabled={processing()}
+            autofocus
+          >
+            {processing() ? (
+              <>
+                <i class="hb hb-spin hb-spinner" aria-hidden="true"></i>{' '}
+                {gift ? 'Creating & Exporting…' : 'Revealing & Exporting…'}
+              </>
+            ) : gift ? (
+              'Create & Export'
+            ) : (
+              'Reveal & Export'
+            )}
           </button>
         </footer>
       </section>
@@ -142,6 +209,8 @@ export function BulkRevealResults({
   const groups = groupClaimResults(report)
   const requested = report.successes.length + report.failures.length
 
+  useEscapeKey(onClose)
+
   const copyLog = (): void => {
     if (copyToClipboard(formatClaimLog(report))) {
       showFlashToast('Log copied to clipboard')
@@ -149,11 +218,7 @@ export function BulkRevealResults({
   }
 
   return (
-    <div
-      class={styles.modal_backdrop}
-      role="presentation"
-      onKeyDown={(event) => event.key === 'Escape' && onClose()}
-    >
+    <div class={styles.modal_backdrop} role="presentation">
       <section
         class={`${styles.modal} ${styles.modal_wide}`}
         role="dialog"

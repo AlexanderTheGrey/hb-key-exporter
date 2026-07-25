@@ -55,7 +55,8 @@
   text-align: center;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  transform: translate(-50%, -50%);
+  transform: translate3d(-50%, -50%, 0) scale(1);
+  backface-visibility: hidden;
 }
 
 .hb_extractor-flash-toast_default {
@@ -73,26 +74,26 @@
 @keyframes hb_extractor-flash-toast-flash {
   0% {
     opacity: 0.35;
-    transform: translate(-50%, calc(-50% + 8px)) scale(0.96);
+    transform: translate3d(-50%, calc(-50% + 8px), 0) scale(0.96);
     filter: brightness(1.15);
   }
 
   35% {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.03);
+    transform: translate3d(-50%, -50%, 0) scale(1.03);
     filter: brightness(1.15);
   }
 
   100% {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    transform: translate3d(-50%, -50%, 0) scale(1);
     filter: none;
   }
 }
 
 .hb_extractor-flash-toast_flash {
   animation: hb_extractor-flash-toast-flash 700ms ease-out both;
-  transform-origin: center;
+  will-change: transform, opacity, filter;
 }
 
 #hb_extractor-container details {

@@ -44,6 +44,17 @@ tr.expired {
   margin-bottom: 10px;
 }
 
+.checkbox_label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.checkbox_label input[type='checkbox'] {
+  margin: 0;
+  transform: translateY(0.25px);
+}
+
 .btn {
   background-color: #e9e9ed;
   border: 1px solid #8f8f9d;
@@ -101,8 +112,8 @@ tr.expired {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(18, 22, 29, 0.68);
-  backdrop-filter: blur(2px);
+  background: rgba(18, 22, 29, 0.72);
+  backdrop-filter: brightness(0.65) saturate(0.65);
 }
 
 .modal {
@@ -211,6 +222,33 @@ tr.expired {
   color: #69717d;
   font-size: 12px;
   font-weight: 600;
+}
+
+.modal_progress {
+  margin-bottom: 18px;
+}
+
+.modal_progress_header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 7px;
+  color: #404650;
+  font-size: 12.5px;
+}
+
+.modal_progress_track {
+  height: 8px;
+  overflow: hidden;
+  background: #e1e4e8;
+  border-radius: 999px;
+}
+
+.modal_progress_bar {
+  height: 100%;
+  background: #f4511e;
+  border-radius: inherit;
+  transition: width 180ms ease-out;
 }
 
 .type_breakdown {
