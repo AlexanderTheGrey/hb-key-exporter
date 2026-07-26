@@ -269,7 +269,7 @@ export function Table({
       if (keyless && !(await requestKeylessConfirmation(row, gift))) return
 
       try {
-        if (hasRedeemedKeyValue(row.redeemed_key_val) || row.is_gift || row.is_expired) return
+        if (hasRedeemedKeyValue(row.redeemed_key_val) || row.is_gift) return
 
         const value = await redeem(row, gift)
         row.redeemed_key_val = value
@@ -558,7 +558,22 @@ export function Table({
                   )
                 }
 
-                if (!hasRedeemedKeyValue(row.redeemed_key_val) && !row.is_gift && !row.is_expired) {
+                if (!hasRedeemedKeyValue(row.redeemed_key_val) && !row.is_gift) {
+                  const revealTitle = keyless
+                    ? row.is_expired
+                      ? 'Attempt direct redemption to the linked account (marked expired); no transferable key will be shown'
+                      : 'Redeem directly to the linked account; no transferable key will be shown'
+                    : row.is_expired
+                      ? 'Attempt reveal (marked expired)'
+                      : 'Reveal'
+                  const giftTitle = keyless
+                    ? row.is_expired
+                      ? 'Attempt gift-link creation (marked expired); Humble may redeem this directly to the linked account'
+                      : 'Create gift link; Humble may redeem this directly to the linked account'
+                    : row.is_expired
+                      ? 'Attempt gift-link creation (marked expired)'
+                      : 'Create gift link'
+
                   actions.push(
                     hm(
                       'button',
@@ -569,9 +584,7 @@ export function Table({
                       },
                       hm('i', {
                         class: keyless ? 'hb hb-link' : 'hb hb-magic',
-                        title: keyless
-                          ? 'Redeem directly to the linked account; no transferable key will be shown'
-                          : 'Reveal',
+                        title: revealTitle,
                       })
                     ),
                     hm(
@@ -583,9 +596,7 @@ export function Table({
                       },
                       hm('i', {
                         class: 'hb hb-gift',
-                        title: keyless
-                          ? 'Create gift link; Humble may redeem this directly to the linked account'
-                          : 'Create gift link',
+                        title: giftTitle,
                       })
                     )
                   )

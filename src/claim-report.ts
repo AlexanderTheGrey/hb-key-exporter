@@ -2,6 +2,7 @@ export interface ClaimProduct {
   category_human_name: string
   direct_redeem: boolean
   human_name: string
+  is_expired?: boolean
   key_type: string
 }
 
@@ -23,6 +24,7 @@ export type ClaimPlan<T extends ClaimProduct = ClaimProduct> = {
   products: T[]
   typeCounts: ClaimTypeCount[]
   keylessCount: number
+  expiredCount: number
   bundleCount: number
 }
 
@@ -65,12 +67,14 @@ export const createClaimPlan = <T extends ClaimProduct>(products: T[]): ClaimPla
   const counts = new Map<string, number>()
   const bundles = new Set<string>()
   let keylessCount = 0
+  let expiredCount = 0
 
   for (const product of products) {
     const label = getClaimTypeLabel(product)
     counts.set(label, (counts.get(label) ?? 0) + 1)
     bundles.add(product.category_human_name || 'Unknown bundle')
     if (isKeylessProduct(product)) keylessCount++
+    if (product.is_expired) expiredCount++
   }
 
   return {
@@ -79,6 +83,7 @@ export const createClaimPlan = <T extends ClaimProduct>(products: T[]): ClaimPla
       (left, right) => right.count - left.count || left.label.localeCompare(right.label)
     ),
     keylessCount,
+    expiredCount,
     bundleCount: bundles.size,
   }
 }

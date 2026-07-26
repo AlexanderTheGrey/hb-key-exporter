@@ -296,6 +296,16 @@ export function BulkRevealConfirmation({
             </div>
           </Show>
 
+          <Show when={plan.expiredCount > 0}>
+            <div class={styles.modal_warning} role="alert">
+              <strong>Expired-item warning</strong>
+              <p>
+                {plan.expiredCount} {pluralize(plan.expiredCount, 'item')} Humble marks as expired.
+                These requests may fail, but the exporter will attempt them if you continue.
+              </p>
+            </div>
+          </Show>
+
           <p class={styles.modal_note} aria-live="polite">
             {processing()
               ? 'Keep this window open while the reveal and export complete.'
