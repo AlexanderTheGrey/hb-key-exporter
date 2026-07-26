@@ -4,6 +4,7 @@ import {
   getClaimTypeLabel,
   getErrorMessage,
   groupClaimResults,
+  isKeylessProduct,
   type ClaimPlan,
   type ClaimReport,
 } from '../claim-report'
@@ -13,6 +14,34 @@ import styles from '../style.module.css'
 
 const pluralize = (count: number, singular: string, plural = `${singular}s`): string =>
   count === 1 ? singular : plural
+
+const claimTypeIconClasses: Record<string, string> = {
+  battlenet: 'hb-bnet',
+  epic: 'hb-epic',
+  epicgames: 'hb-epic',
+  gog: 'hb-gog',
+  oculus: 'hb-oculus',
+  origin: 'hb-origin',
+  steam: 'hb-steam',
+  ubisoft: 'hb-uplay',
+  ubisoftconnect: 'hb-uplay',
+  uplay: 'hb-uplay',
+}
+
+const ClaimType = ({ product }: { product: Product }) => {
+  const iconClass = isKeylessProduct(product)
+    ? 'hb-link'
+    : claimTypeIconClasses[product.key_type.toLowerCase().replace(/[^a-z0-9]/g, '')]
+
+  return (
+    <span class={styles.result_type}>
+      {iconClass ? (
+        <i class={`hb ${iconClass} ${styles.result_type_icon}`} aria-hidden="true"></i>
+      ) : null}
+      <span>{getClaimTypeLabel(product)}</span>
+    </span>
+  )
+}
 
 const useEscapeKey = (onEscape: () => void, disabled?: Accessor<boolean>): void => {
   const handleKeyDown = (event: KeyboardEvent): void => {
@@ -316,8 +345,15 @@ export function BulkRevealResults({
 }) {
   const groups = groupClaimResults(report)
   const requested = report.successes.length + report.failures.length
+  let resultGroupsRef!: HTMLDivElement
 
   useEscapeKey(onClose)
+
+  const setAllBundlesOpen = (open: boolean): void => {
+    for (const bundle of resultGroupsRef.querySelectorAll<HTMLDetailsElement>('details')) {
+      bundle.open = open
+    }
+  }
 
   const copyLog = (): void => {
     if (copyToClipboard(formatClaimLog(report))) {
@@ -382,10 +418,32 @@ export function BulkRevealResults({
             )}
           </div>
 
-          <div class={styles.result_groups}>
+          <Show when={groups.length > 1}>
+            <div class={styles.result_group_controls}>
+              <button
+                type="button"
+                class={styles.result_group_button}
+                onClick={() => setAllBundlesOpen(true)}
+              >
+                Expand all
+              </button>
+              <button
+                type="button"
+                class={styles.result_group_button}
+                onClick={() => setAllBundlesOpen(false)}
+              >
+                Collapse all
+              </button>
+            </div>
+          </Show>
+
+          <div ref={resultGroupsRef} class={styles.result_groups}>
             <For each={groups}>
               {(group) => (
-                <details class={styles.result_bundle} open={group.failures.length > 0}>
+                <details
+                  class={styles.result_bundle}
+                  open={groups.length === 1 || group.failures.length > 0}
+                >
                   <summary>
                     <span>{group.bundleName}</span>
                     <span class={styles.result_bundle_counts}>
@@ -412,7 +470,9 @@ export function BulkRevealResults({
                               </span>
                               <span>
                                 <strong>{product.human_name}</strong>
-                                <small>{getClaimTypeLabel(product)}</small>
+                                <small>
+                                  <ClaimType product={product} />
+                                </small>
                               </span>
                             </li>
                           )}
@@ -432,7 +492,7 @@ export function BulkRevealResults({
                               <span>
                                 <strong>{product.human_name}</strong>
                                 <small>
-                                  {getClaimTypeLabel(product)} — {getErrorMessage(error)}
+                                  <ClaimType product={product} /> — {getErrorMessage(error)}
                                 </small>
                               </span>
                             </li>

@@ -383,6 +383,29 @@ tr.expired {
   border-color: #efc2c8;
 }
 
+.result_group_controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.result_group_button {
+  padding: 4px 8px;
+  background: #fff;
+  color: #3d434c;
+  border: 1px solid #b8bec7;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.result_group_button:hover,
+.result_group_button:focus-visible {
+  background: #eef0f3;
+}
+
 .result_groups {
   display: flex;
   flex-direction: column;
@@ -467,6 +490,17 @@ tr.expired {
   margin-top: 2px;
   color: #626a75;
   line-height: 1.35;
+}
+
+.result_type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.result_type_icon {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .result_success {
