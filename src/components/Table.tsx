@@ -1,4 +1,5 @@
-import { onCleanup, onMount, type Accessor, type Setter } from 'solid-js'
+import { createSignal, onCleanup, onMount, Show, type Accessor, type Setter } from 'solid-js'
+import { isKeylessProduct } from '../claim-report'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
 import { restoreTableState, type TableState } from '../table-state'
 import {
@@ -16,6 +17,13 @@ import DataTable, { type Api } from 'datatables.net-dt'
 import { hm } from '@violentmonkey/dom'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
+import { KeylessRedemptionConfirmation } from './BulkRevealDialogs'
+
+type PendingKeylessRedemption = {
+  product: Product
+  gift: boolean
+  resolve: (confirmed: boolean) => void
+}
 
 export function Table({
   products,
@@ -31,6 +39,36 @@ export function Table({
   onStateRestored?: () => void
 }) {
   let tableRef!: HTMLTableElement
+  const [pendingKeylessRedemption, setPendingKeylessRedemption] =
+    createSignal<PendingKeylessRedemption | null>(null)
+  const [keylessRedemptionProcessing, setKeylessRedemptionProcessing] = createSignal(false)
+
+  const requestKeylessConfirmation = (product: Product, gift: boolean): Promise<boolean> => {
+    if (pendingKeylessRedemption()) return Promise.resolve(false)
+
+    setKeylessRedemptionProcessing(false)
+    return new Promise((resolve) => setPendingKeylessRedemption({ product, gift, resolve }))
+  }
+
+  const cancelKeylessRedemption = (): void => {
+    if (keylessRedemptionProcessing()) return
+
+    const pending = pendingKeylessRedemption()
+    if (!pending) return
+
+    setPendingKeylessRedemption(null)
+    pending.resolve(false)
+  }
+
+  const confirmKeylessRedemption = (): void => {
+    const pending = pendingKeylessRedemption()
+    if (!pending || keylessRedemptionProcessing()) return
+
+    setKeylessRedemptionProcessing(true)
+    pending.resolve(true)
+  }
+
+  onCleanup(() => pendingKeylessRedemption()?.resolve(false))
 
   onMount(() => {
     console.debug('Mounting table with', products.length, 'products')
@@ -225,6 +263,41 @@ export function Table({
     })
 
     let dt!: Api<Product>
+
+    const revealProduct = async (row: Product, gift: boolean): Promise<void> => {
+      const keyless = isKeylessProduct(row)
+      if (keyless && !(await requestKeylessConfirmation(row, gift))) return
+
+      try {
+        if (hasRedeemedKeyValue(row.redeemed_key_val) || row.is_gift || row.is_expired) return
+
+        const value = await redeem(row, gift)
+        row.redeemed_key_val = value
+        row.type = gift ? 'Gift' : 'Key'
+        row.is_gift = gift
+        dt.rows((_index, product) => product === row)
+          .invalidate('data')
+          .draw(false)
+
+        if (copyToClipboard(serializeRedeemedKeyValue(value))) {
+          showFlashToast(
+            keyless
+              ? 'Redemption result copied to clipboard'
+              : gift
+                ? 'Link copied to clipboard'
+                : 'Key copied to clipboard'
+          )
+        }
+      } catch (error) {
+        showErrorToast(error)
+      } finally {
+        if (keyless) {
+          setPendingKeylessRedemption(null)
+          setKeylessRedemptionProcessing(false)
+        }
+      }
+    }
+
     setDt(
       () =>
         (dt = new DataTable<Product>(tableRef, {
@@ -426,6 +499,7 @@ export function Table({
               searchable: false,
               data: (row: Product) => {
                 const actions = []
+                const keyless = isKeylessProduct(row)
 
                 if (hasRedeemedKeyValue(row.redeemed_key_val)) {
                   actions.push(
@@ -491,47 +565,28 @@ export function Table({
                       {
                         class: styles.btn,
                         type: 'button',
-                        onclick: async () => {
-                          try {
-                            const key = await redeem(row)
-                            row.redeemed_key_val = key
-                            row.type = 'Key'
-                            dt.rows((_index, product) => product === row)
-                              .invalidate('data')
-                              .draw(false)
-                            if (copyToClipboard(serializeRedeemedKeyValue(key))) {
-                              showFlashToast('Key copied to clipboard')
-                            }
-                          } catch (error) {
-                            showErrorToast(error)
-                          }
-                        },
+                        onclick: () => void revealProduct(row, false),
                       },
-                      hm('i', { class: 'hb hb-magic', title: 'Reveal' })
+                      hm('i', {
+                        class: keyless ? 'hb hb-link' : 'hb hb-magic',
+                        title: keyless
+                          ? 'Redeem directly to the linked account; no transferable key will be shown'
+                          : 'Reveal',
+                      })
                     ),
                     hm(
                       'button',
                       {
                         class: styles.btn,
                         type: 'button',
-                        onclick: async () => {
-                          try {
-                            const link = await redeem(row, true)
-                            row.redeemed_key_val = link
-                            row.type = 'Gift'
-                            row.is_gift = true
-                            dt.rows((_index, product) => product === row)
-                              .invalidate('data')
-                              .draw(false)
-                            if (copyToClipboard(serializeRedeemedKeyValue(link))) {
-                              showFlashToast('Link copied to clipboard')
-                            }
-                          } catch (error) {
-                            showErrorToast(error)
-                          }
-                        },
+                        onclick: () => void revealProduct(row, true),
                       },
-                      hm('i', { class: 'hb hb-gift', title: 'Create gift link' })
+                      hm('i', {
+                        class: 'hb hb-gift',
+                        title: keyless
+                          ? 'Create gift link; Humble may redeem this directly to the linked account'
+                          : 'Create gift link',
+                      })
                     )
                   )
                 }
@@ -669,5 +724,20 @@ export function Table({
     })
   })
   console.debug('Table Loaded')
-  return <table ref={tableRef} id="hb_extractor-table" class="display compact"></table>
+  return (
+    <>
+      <table ref={tableRef} id="hb_extractor-table" class="display compact"></table>
+      <Show when={pendingKeylessRedemption()} keyed>
+        {(pending) => (
+          <KeylessRedemptionConfirmation
+            product={pending.product}
+            gift={pending.gift}
+            processing={keylessRedemptionProcessing}
+            onCancel={cancelKeylessRedemption}
+            onConfirm={confirmKeylessRedemption}
+          />
+        )}
+      </Show>
+    </>
+  )
 }

@@ -26,6 +26,114 @@ const useEscapeKey = (onEscape: () => void, disabled?: Accessor<boolean>): void 
   onCleanup(() => document.removeEventListener('keydown', handleKeyDown))
 }
 
+export function KeylessRedemptionConfirmation({
+  product,
+  gift,
+  processing,
+  onCancel,
+  onConfirm,
+}: {
+  product: Product
+  gift: boolean
+  processing: Accessor<boolean>
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const warning = gift
+    ? [
+        'Humble may redeem this item immediately to the third-party account linked to your',
+        'Humble Bundle account instead of producing a transferable gift link.',
+      ].join(' ')
+    : [
+        'Continuing will redeem this item immediately to the third-party account linked to your',
+        'Humble Bundle account. No transferable key will be shown.',
+      ].join(' ')
+
+  useEscapeKey(onCancel, processing)
+
+  return (
+    <div
+      class={styles.modal_backdrop}
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && !processing() && onCancel()}
+    >
+      <section
+        class={styles.modal}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hb_extractor-keyless-confirm-title"
+        aria-busy={processing()}
+        tabindex="-1"
+      >
+        <header class={styles.modal_header}>
+          <div>
+            <p class={styles.modal_eyebrow}>Keyless redemption warning</p>
+            <h2 id="hb_extractor-keyless-confirm-title" class={styles.modal_title}>
+              {gift ? 'Continue with keyless gift-link creation?' : 'Redeem to linked account?'}
+            </h2>
+          </div>
+          <button
+            type="button"
+            class={styles.modal_close}
+            aria-label="Cancel"
+            title="Cancel"
+            onClick={onCancel}
+            disabled={processing()}
+          >
+            ×
+          </button>
+        </header>
+
+        <div class={styles.modal_body}>
+          <p class={styles.modal_lead}>
+            <strong>{product.human_name}</strong> is marked by Humble for direct redemption.
+          </p>
+
+          <div class={styles.modal_warning} role="alert">
+            <strong>Linked-account redemption</strong>
+            <p>{warning} Verify that the correct account is linked before continuing.</p>
+          </div>
+
+          <p class={styles.modal_note} aria-live="polite">
+            {processing()
+              ? 'Keep this window open while Humble processes the request.'
+              : 'Nothing will be redeemed unless you confirm.'}
+          </p>
+        </div>
+
+        <footer class={styles.modal_footer}>
+          <button
+            type="button"
+            class={styles.modal_secondary_button}
+            onClick={onCancel}
+            disabled={processing()}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class={styles.modal_primary_button}
+            onClick={onConfirm}
+            disabled={processing()}
+            autofocus
+          >
+            {processing() ? (
+              <>
+                <i class="hb hb-spin hb-spinner" aria-hidden="true"></i>{' '}
+                {gift ? 'Continuing…' : 'Redeeming…'}
+              </>
+            ) : gift ? (
+              'Continue'
+            ) : (
+              'Redeem to Linked Account'
+            )}
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 export function BulkRevealConfirmation({
   plan,
   gift,
