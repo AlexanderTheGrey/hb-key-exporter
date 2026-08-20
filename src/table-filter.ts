@@ -27,6 +27,10 @@ const inverseConditions: Record<string, string> = {
   ends: '!ends',
   expired: 'notExpired',
   notExpired: 'expired',
+  regionRestricted: 'regionUnrestricted',
+  regionUnrestricted: 'regionRestricted',
+  regionRedeemable: 'regionNotRedeemable',
+  regionNotRedeemable: 'regionRedeemable',
   null: '!null',
   starts: '!starts',
 }

@@ -1,5 +1,6 @@
 import LZString from 'lz-string'
 import { hasRedeemedKeyValue, type RedeemedKeyValue } from './redeemed-key'
+import { normalizeCountryCodes, type RegionRestrictions } from './region'
 
 export interface Order {
   created: string
@@ -36,7 +37,7 @@ export interface RedeemedDate {
   iso: string
 }
 
-export interface Product {
+export interface Product extends RegionRestrictions {
   machine_name: string
   category: 'Store' | 'Bundle' | 'Other' | 'Choice'
   category_id: string
@@ -339,6 +340,8 @@ export const getProducts = (
           steamAppId && owned === 'Yes'
             ? (redeemedMap[String(steamAppId)] ?? undefined)
             : undefined,
+        exclusive_countries: normalizeCountryCodes(product.exclusive_countries),
+        disallowed_countries: normalizeCountryCodes(product.disallowed_countries),
       }
     })
   )

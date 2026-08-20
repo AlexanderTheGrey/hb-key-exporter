@@ -101,13 +101,18 @@ const serializeField = (value: unknown): string => {
 const exportCSV = (products: Product[], delimiter: string): string => {
   if (!products.length) return ''
 
-  const header = Object.keys(products[0]).flatMap((name) =>
-    name === 'redeemed_date' ? ['redeemed_date_label', 'redeemed_date_iso'] : [name]
-  )
+  const header = Object.keys(products[0]).flatMap((name) => {
+    if (name === 'redeemed_date') return ['redeemed_date_label', 'redeemed_date_iso']
+    if (name === 'exclusive_countries') return ['Exclusive Countries']
+    if (name === 'disallowed_countries') return ['Disallowed Countries']
+    return [name]
+  })
 
   const getCsvValue = (product: Product, name: string): unknown => {
     if (name === 'redeemed_date_label') return product.redeemed_date?.label ?? ''
     if (name === 'redeemed_date_iso') return product.redeemed_date?.iso ?? ''
+    if (name === 'Exclusive Countries') return product.exclusive_countries.join(';')
+    if (name === 'Disallowed Countries') return product.disallowed_countries.join(';')
     return product[name as keyof Product]
   }
 

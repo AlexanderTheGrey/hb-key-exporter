@@ -1,6 +1,14 @@
 import { createSignal, onCleanup, onMount, Show, type Accessor, type Setter } from 'solid-js'
 import { isKeylessProduct } from '../claim-report'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
+import {
+  getRegionCountryCodes,
+  hasRegionRestrictions,
+  isRegionRedeemableIn,
+  parseRegionRestrictions,
+  serializeRegionRestrictions,
+  type RegionRestrictions,
+} from '../region'
 import { restoreTableState, type TableState } from '../table-state'
 import {
   clearSteamSupportNotice,
@@ -292,6 +300,256 @@ export function Table({
           }
         : undefined
 
+    type SearchBuilderCriteria = {
+      classes: {
+        input: string
+        value: string
+      }
+    }
+    type SearchBuilderValue = {
+      0?: HTMLElement
+      on: (event: string, listener: () => void) => SearchBuilderValue
+      off: (event?: string) => SearchBuilderValue
+      remove: () => void
+    }
+    type SearchBuilderInput = SearchBuilderValue[]
+    type SearchBuilderInputCallback = (criteria: SearchBuilderCriteria, input: unknown) => void
+    type SearchBuilderCondition = {
+      conditionName?: string
+      init?: (
+        criteria: SearchBuilderCriteria,
+        callback: SearchBuilderInputCallback,
+        preDefined?: string[] | null
+      ) => SearchBuilderValue
+      inputValue?: (elements: SearchBuilderInput) => string[]
+      isInputValid?: (elements: SearchBuilderInput) => boolean
+      search?: (value: string, comparison: string[]) => boolean
+      [key: string]: unknown
+    }
+
+    const noValueCondition =
+      (
+        DataTable as typeof DataTable & {
+          ext?: {
+            searchBuilder?: {
+              conditions?: {
+                string?: Record<string, SearchBuilderCondition>
+              }
+            }
+          }
+        }
+      ).ext?.searchBuilder?.conditions?.string?.null ?? emptyDateCondition
+
+    const regionSearchBuilderType = 'region'
+    const countryDisplayNames = new Intl.DisplayNames(undefined, { type: 'region' })
+    const countryOptions = getRegionCountryCodes(products)
+      .map((code) => ({ code, name: countryDisplayNames.of(code) ?? code }))
+      .sort((left, right) => left.name.localeCompare(right.name))
+
+    const getCountrySelect = (elements: SearchBuilderInput): HTMLSelectElement | null => {
+      const element = elements[0]?.[0]
+      return element instanceof HTMLSelectElement ? element : null
+    }
+
+    const createCountryCondition = (
+      conditionName: string,
+      search: (restrictions: RegionRestrictions, countryCode: string) => boolean
+    ): SearchBuilderCondition => ({
+      conditionName,
+      init: (criteria, callback, preDefined = null) => {
+        const select = document.createElement('select')
+        select.classList.add(criteria.classes.value, criteria.classes.input)
+        select.setAttribute('aria-label', 'Country')
+
+        const placeholder = document.createElement('option')
+        placeholder.value = ''
+        placeholder.textContent = 'Country'
+        placeholder.disabled = true
+        placeholder.selected = true
+        select.append(placeholder)
+
+        for (const { code, name } of countryOptions) {
+          const option = document.createElement('option')
+          option.value = code
+          option.textContent = name === code ? code : `${name} (${code})`
+          select.append(option)
+        }
+
+        const selectedCountry = preDefined?.[0]?.trim().toUpperCase() ?? ''
+        if (
+          selectedCountry &&
+          !Array.from(select.options).some((option) => option.value === selectedCountry)
+        ) {
+          const option = document.createElement('option')
+          const name = countryDisplayNames.of(selectedCountry) ?? selectedCountry
+          option.value = selectedCountry
+          option.textContent =
+            name === selectedCountry ? selectedCountry : `${name} (${selectedCountry})`
+          select.append(option)
+        }
+
+        select.value = selectedCountry
+
+        const jquery = DataTable.use('jq') as (element: HTMLElement) => SearchBuilderValue
+        const input = jquery(select)
+        input.on('change.dtsb', () => callback(criteria, select))
+        return input
+      },
+      inputValue: (elements) => [getCountrySelect(elements)?.value ?? ''],
+      isInputValid: (elements) => Boolean(getCountrySelect(elements)?.value),
+      search: (value, comparison) => {
+        const countryCode = comparison[0]
+        return countryCode ? search(parseRegionRestrictions(value), countryCode) : false
+      },
+    })
+
+    const regionConditions = noValueCondition
+      ? {
+          regionRestricted: {
+            ...noValueCondition,
+            conditionName: 'Has restrictions',
+            search: (value: string) => hasRegionRestrictions(parseRegionRestrictions(value)),
+          },
+          regionUnrestricted: {
+            ...noValueCondition,
+            conditionName: 'No restrictions',
+            search: (value: string) => !hasRegionRestrictions(parseRegionRestrictions(value)),
+          },
+          regionRedeemable: createCountryCondition('Redeemable in', isRegionRedeemableIn),
+          regionNotRedeemable: createCountryCondition(
+            'Not redeemable in',
+            (restrictions, countryCode) => !isRegionRedeemableIn(restrictions, countryCode)
+          ),
+        }
+      : undefined
+
+    const countryNames = (codes: string[]): string =>
+      codes
+        .map((code) => countryDisplayNames.of(code) ?? code)
+        .sort((left, right) => left.localeCompare(right))
+        .join(', ')
+
+    const regionHeaderTooltip =
+      'The padlock indicates country restrictions reported by Humble and may not exactly reflect Steam activation restrictions for the assigned key.'
+    const ownedHeaderTooltip =
+      "Relies on the Steam app ID returned by Humble's API and may be inaccurate when keys contain multiple app IDs."
+    const redeemedHeaderTooltip =
+      'Uses Steam Support app ID data, which may be inaccurate when the key contains multiple app IDs.'
+    const redeemedDataCaveat =
+      "Uses Steam Support app ID data, which may be inaccurate when the key's package (sub ID) contains multiple app IDs."
+
+    const regionTooltip = (row: Product): string => {
+      const exclusive = row.exclusive_countries
+      const disallowed = row.disallowed_countries
+      const details: string[] = []
+
+      if (exclusive.length) {
+        details.push(`Redeemable only in: ${countryNames(exclusive)}.`)
+      }
+      if (disallowed.length) {
+        details.push(`Unavailable in: ${countryNames(disallowed)}.`)
+      }
+      if (!details.length) details.push('No region restrictions reported by Humble.')
+
+      return details.join('\n')
+    }
+
+    const regionPopover = document.createElement('div')
+    regionPopover.className = styles.region_tooltip
+    regionPopover.role = 'tooltip'
+    regionPopover.hidden = true
+    document.body.append(regionPopover)
+
+    const regionPopoverShowDelay = 500
+    const regionPopoverHideDelay = 120
+    let regionPopoverAnchor: HTMLElement | null = null
+    let regionPopoverShowTimer: number | null = null
+    let regionPopoverHideTimer: number | null = null
+
+    const cancelRegionPopoverShow = (): void => {
+      if (regionPopoverShowTimer == null) return
+      window.clearTimeout(regionPopoverShowTimer)
+      regionPopoverShowTimer = null
+    }
+
+    const cancelRegionPopoverHide = (): void => {
+      if (regionPopoverHideTimer == null) return
+      window.clearTimeout(regionPopoverHideTimer)
+      regionPopoverHideTimer = null
+    }
+
+    const hideRegionPopover = (force = false): void => {
+      cancelRegionPopoverShow()
+      cancelRegionPopoverHide()
+
+      if (
+        !force &&
+        (regionPopoverAnchor?.matches(':hover, :focus') || regionPopover.matches(':hover'))
+      ) {
+        return
+      }
+
+      regionPopover.hidden = true
+      regionPopoverAnchor = null
+    }
+
+    const scheduleRegionPopoverHide = (): void => {
+      cancelRegionPopoverShow()
+      cancelRegionPopoverHide()
+      regionPopoverHideTimer = window.setTimeout(() => hideRegionPopover(), regionPopoverHideDelay)
+    }
+
+    const positionRegionPopover = (anchor: HTMLElement): void => {
+      const anchorRect = anchor.getBoundingClientRect()
+      const tooltipRect = regionPopover.getBoundingClientRect()
+      const margin = 8
+      const gap = 6
+      const centeredLeft = anchorRect.left + anchorRect.width / 2 - tooltipRect.width / 2
+      const left = Math.min(
+        Math.max(margin, centeredLeft),
+        Math.max(margin, window.innerWidth - tooltipRect.width - margin)
+      )
+      const below = anchorRect.bottom + gap
+      const top =
+        below + tooltipRect.height <= window.innerHeight - margin
+          ? below
+          : Math.max(margin, anchorRect.top - tooltipRect.height - gap)
+
+      regionPopover.style.left = `${Math.round(left)}px`
+      regionPopover.style.top = `${Math.round(top)}px`
+    }
+
+    const showRegionPopover = (anchor: HTMLElement, text: string): void => {
+      cancelRegionPopoverShow()
+      cancelRegionPopoverHide()
+      regionPopoverAnchor = anchor
+      regionPopover.textContent = text
+      regionPopover.hidden = false
+      positionRegionPopover(anchor)
+    }
+
+    const scheduleRegionPopoverShow = (anchor: HTMLElement, text: string): void => {
+      cancelRegionPopoverShow()
+      cancelRegionPopoverHide()
+
+      if (!regionPopover.hidden) {
+        showRegionPopover(anchor, text)
+        return
+      }
+
+      regionPopoverShowTimer = window.setTimeout(() => {
+        regionPopoverShowTimer = null
+        if (anchor.matches(':hover')) showRegionPopover(anchor, text)
+      }, regionPopoverShowDelay)
+    }
+
+    regionPopover.addEventListener('mouseenter', cancelRegionPopoverHide)
+    regionPopover.addEventListener('mouseleave', scheduleRegionPopoverHide)
+
+    const closeRegionPopover = (): void => hideRegionPopover(true)
+    window.addEventListener('resize', closeRegionPopover)
+    window.addEventListener('scroll', closeRegionPopover, true)
+
     let dt!: Api<Product>
 
     const pageJumpInput = document.createElement('input')
@@ -396,7 +654,7 @@ export function Table({
               render: displayDate,
             },
             {
-              targets: [10],
+              targets: [11],
               data: null,
               defaultContent: '',
             },
@@ -404,14 +662,17 @@ export function Table({
           order: [[7, 'desc']],
           columns: [
             {
-              title: 'Type',
+              title: `Type<span class="${styles.header_note}" title="${regionHeaderTooltip}"></span>`,
               data: 'key_type',
               type: 'html-utf8',
+              searchBuilder: {
+                orthogonal: { display: 'filter' },
+              },
               render: (data, type, row) => {
                 const value = renderCellValue(data, type)
                 if (value !== undefined) return value
 
-                return hm(
+                const platformIcon = hm(
                   'i',
                   {
                     class: `hb hb-key hb-${data}`,
@@ -419,6 +680,30 @@ export function Table({
                   },
                   hm('span', { class: 'hidden', innerText: String(data) })
                 )
+
+                if (!hasRegionRestrictions(row)) return platformIcon
+
+                const tooltip = regionTooltip(row)
+                return hm('span', { class: styles.platform_icon }, [
+                  platformIcon,
+                  hm('span', {
+                    class: styles.region_lock,
+                    tabindex: 0,
+                    'aria-label': tooltip,
+                    innerText: '🔒',
+                    onmouseenter: (event: MouseEvent) =>
+                      scheduleRegionPopoverShow(event.currentTarget as HTMLElement, tooltip),
+                    onmouseleave: scheduleRegionPopoverHide,
+                    onfocus: (event: FocusEvent) =>
+                      showRegionPopover(event.currentTarget as HTMLElement, tooltip),
+                    onblur: scheduleRegionPopoverHide,
+                    onkeydown: (event: KeyboardEvent) => {
+                      if (event.key !== 'Escape') return
+                      hideRegionPopover(true)
+                      ;(event.currentTarget as HTMLElement).blur()
+                    },
+                  }),
+                ]) as unknown as string
               },
               className: styles.platform,
             },
@@ -469,7 +754,7 @@ export function Table({
               render: (data, type) => displayYesNoBadge(data, type, styles.warning_badge),
             },
             {
-              title: `Owned <span class="${styles.header_note}" title="Relies on the Steam app ID returned by Humble's API and may be inaccurate for package/sub keys."></span>`,
+              title: `Owned<span class="${styles.header_note}" title="${ownedHeaderTooltip}"></span>`,
               data: 'owned',
               type: 'string-utf8',
               render: displayOwned,
@@ -479,7 +764,7 @@ export function Table({
               // ---------------------------------------------------------------
               // "Redeemed" column — Steam Support app-level data
               // ---------------------------------------------------------------
-              title: `Redeemed <span class="${styles.header_note}" title="Uses Steam Support app ID data and may be inaccurate for package/sub keys."></span>`,
+              title: `Redeemed<span class="${styles.header_note}" title="${redeemedHeaderTooltip}"></span>`,
               data: null,
               type: 'date',
               className: 'dt-right',
@@ -581,6 +866,19 @@ export function Table({
               data: 'expiry_date',
               type: 'date',
               ...(expiryDateConditions && { searchBuilderType: expiryDateSearchBuilderType }),
+            },
+            {
+              title: 'Region',
+              data: 'exclusive_countries',
+              type: 'string-utf8',
+              render: (_data, _type, row) => serializeRegionRestrictions(row),
+              visible: false,
+              orderable: false,
+              searchable: false,
+              searchBuilder: {
+                orthogonal: { display: 'region', search: 'region' },
+              },
+              ...(regionConditions && { searchBuilderType: regionSearchBuilderType }),
             },
             {
               title: '',
@@ -699,10 +997,13 @@ export function Table({
           layout: {
             top1: {
               searchBuilder: {
-                columns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-                ...(expiryDateConditions && {
-                  conditions: { [expiryDateSearchBuilderType]: expiryDateConditions },
-                }),
+                columns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                conditions: {
+                  ...(expiryDateConditions && {
+                    [expiryDateSearchBuilderType]: expiryDateConditions,
+                  }),
+                  ...(regionConditions && { [regionSearchBuilderType]: regionConditions }),
+                },
               },
             },
             bottomEnd: [pageJump, 'paging'],
@@ -755,6 +1056,7 @@ export function Table({
     dt.on('page', rememberPagingTop)
     dt.on('draw', restorePagingTop)
     dt.on('draw', syncPageJump)
+    dt.on('draw', closeRegionPopover)
 
     // Warnings when selecting certain column filters
 
@@ -785,10 +1087,14 @@ export function Table({
         show: (selectedColumns) => selectedColumns.includes('Owned'),
       },
       {
-        element: makeWarning(
-          '⚠️ "Redeemed" column uses Steam Support app ID data, which may be inaccurate when the key\'s package (sub ID) contains more than one app ID.'
-        ),
+        element: makeWarning(`⚠️ "Redeemed" column: ${redeemedDataCaveat}`),
         show: (selectedColumns) => selectedColumns.includes('Redeemed'),
+      },
+      {
+        element: makeWarning(
+          '⚠️ "Region" uses country restriction data reported by Humble and may not exactly reflect Steam activation restrictions for the assigned key.'
+        ),
+        show: (selectedColumns) => selectedColumns.includes('Region'),
       },
     ]
 
@@ -821,6 +1127,15 @@ export function Table({
       dt.off('page', rememberPagingTop)
       dt.off('draw', restorePagingTop)
       dt.off('draw', syncPageJump)
+      dt.off('draw', closeRegionPopover)
+
+      window.removeEventListener('resize', closeRegionPopover)
+      window.removeEventListener('scroll', closeRegionPopover, true)
+      regionPopover.removeEventListener('mouseenter', cancelRegionPopoverHide)
+      regionPopover.removeEventListener('mouseleave', scheduleRegionPopoverHide)
+      cancelRegionPopoverShow()
+      cancelRegionPopoverHide()
+      regionPopover.remove()
 
       searchBuilderRoot?.removeEventListener('change', refreshWarnings)
       observer?.disconnect()

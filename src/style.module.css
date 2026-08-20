@@ -11,11 +11,11 @@ tr.expired {
 }
 
 .header_note {
-  margin-left: 3px;
+  margin-left: 1px;
   color: #2f6f9f;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  vertical-align: 1px;
+  vertical-align: baseline;
   cursor: help;
 }
 
@@ -101,6 +101,46 @@ tr.expired {
   border-radius: 3px;
   font: inherit;
   text-align: center;
+}
+
+.platform_icon {
+  position: relative;
+  display: inline-block;
+  line-height: 1;
+}
+
+.region_lock {
+  position: absolute;
+  right: -0.55em;
+  bottom: -0.25em;
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+
+.region_lock:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.region_tooltip {
+  position: fixed;
+  z-index: 10000;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 7px 9px;
+  background: #222;
+  color: #fff;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: pre-line;
+  cursor: text;
+  user-select: text;
 }
 
 .yes_no_badge {
