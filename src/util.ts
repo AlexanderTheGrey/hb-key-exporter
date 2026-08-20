@@ -592,6 +592,123 @@ type SteamNoticeLink = {
   onClick?: () => void
 }
 
+const STEAM_NOTICE_ID_PREFIX = 'hb_extractor-notice-steam-'
+const MAX_NOTICES = 5
+const NOTICE_EXIT_DURATION = 180
+const NOTICE_REFLOW_DURATION = 180
+const NOTICE_ENTER_DURATION = 240
+const NOTICE_AUTO_DISMISS_DURATION = 10_000
+const NOTICE_EASING = 'cubic-bezier(0.16, 1, 0.3, 1)'
+const pendingSteamNotices = new Set<HTMLElement>()
+const noticeDismissals = new WeakMap<HTMLElement, Promise<void>>()
+const noticeTimers = new WeakMap<HTMLElement, number>()
+const autoDismissNotices = new WeakSet<HTMLElement>()
+let noticeSequence = 0
+let noticeRenderQueue = Promise.resolve()
+
+const prefersReducedMotion = (): boolean =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+const animateNoticeIn = (notice: HTMLElement): void => {
+  if (prefersReducedMotion()) return
+
+  notice.animate(
+    [
+      { opacity: 0, transform: 'translate3d(6px, 14px, 0)' },
+      { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+    ],
+    { duration: NOTICE_ENTER_DURATION, easing: NOTICE_EASING }
+  )
+}
+
+const clearNoticeTimer = (notice: HTMLElement): void => {
+  const timer = noticeTimers.get(notice)
+  if (timer === undefined) return
+
+  window.clearTimeout(timer)
+  noticeTimers.delete(notice)
+}
+
+const dismissNotice = (notice: HTMLElement): Promise<void> => {
+  const activeDismissal = noticeDismissals.get(notice)
+  if (activeDismissal) return activeDismissal
+
+  clearNoticeTimer(notice)
+
+  const dismissal = (async () => {
+    const root = notice.parentElement
+    if (!(root instanceof HTMLElement) || !notice.isConnected || prefersReducedMotion()) {
+      notice.remove()
+      return
+    }
+
+    const siblings = Array.from(root.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement && child !== notice
+    )
+    const previousTops = new Map(
+      siblings.map((sibling) => [sibling, sibling.getBoundingClientRect().top])
+    )
+    const rootRect = root.getBoundingClientRect()
+    const noticeRect = notice.getBoundingClientRect()
+    const previousRootWidth = root.style.width
+
+    // Keep the container stable while the departing notice leaves normal flow.
+    root.style.width = `${rootRect.width}px`
+    Object.assign(notice.style, {
+      position: 'absolute',
+      top: `${noticeRect.top - rootRect.top}px`,
+      left: `${noticeRect.left - rootRect.left}px`,
+      width: `${noticeRect.width}px`,
+      boxSizing: 'border-box',
+    })
+
+    const animations = siblings.flatMap((sibling) => {
+      const deltaY = previousTops.get(sibling)! - sibling.getBoundingClientRect().top
+      if (Math.abs(deltaY) < 0.5) return []
+
+      return [
+        sibling.animate([{ top: `${deltaY}px` }, { top: '0px' }], {
+          duration: NOTICE_REFLOW_DURATION,
+          easing: NOTICE_EASING,
+        }),
+      ]
+    })
+
+    animations.push(
+      notice.animate(
+        [
+          { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+          { opacity: 0, transform: 'translate3d(6px, -10px, 0)' },
+        ],
+        { duration: NOTICE_EXIT_DURATION, easing: 'ease-in', fill: 'forwards' }
+      )
+    )
+
+    await Promise.all(animations.map((animation) => animation.finished.catch(() => undefined)))
+    notice.remove()
+    root.style.width = previousRootWidth
+  })()
+
+  noticeDismissals.set(notice, dismissal)
+  return dismissal
+}
+
+const scheduleNoticeDismissal = (notice: HTMLElement, duration: number): void => {
+  const startTimer = () => {
+    clearNoticeTimer(notice)
+    noticeTimers.set(
+      notice,
+      window.setTimeout(() => void dismissNotice(notice), duration)
+    )
+  }
+
+  notice.addEventListener('mouseenter', () => clearNoticeTimer(notice))
+  notice.addEventListener('mouseleave', startTimer)
+  notice.addEventListener('focusin', () => clearNoticeTimer(notice))
+  notice.addEventListener('focusout', startTimer)
+  startTimer()
+}
+
 const ensureNoticeRoot = (): HTMLElement => {
   let root = document.getElementById('hb_extractor-notices')
 
@@ -604,16 +721,34 @@ const ensureNoticeRoot = (): HTMLElement => {
   return root
 }
 
+type SteamNoticeOptions = {
+  allowDuplicates?: boolean
+  autoDismissMs?: number
+}
+
+const hasSteamNotice = (id: string): boolean => {
+  if (Array.from(pendingSteamNotices).some((notice) => notice.dataset.noticeId === id)) {
+    return true
+  }
+
+  const root = document.getElementById('hb_extractor-notices')
+  return Array.from(root?.children ?? []).some(
+    (child) => child instanceof HTMLElement && child.dataset.noticeId === id
+  )
+}
+
 const showSteamNotice = (
   id: string,
   title: string,
   message: string | string[],
-  links: SteamNoticeLink[]
+  links: SteamNoticeLink[],
+  options: SteamNoticeOptions = {}
 ): void => {
-  if (document.getElementById(id)) return
+  if (!options.allowDuplicates && hasSteamNotice(id)) return
 
   const notice = document.createElement('div')
-  notice.id = id
+  notice.id = `${id}-${++noticeSequence}`
+  notice.dataset.noticeId = id
   notice.className = 'hb_extractor-notice'
 
   const heading = document.createElement('strong')
@@ -624,7 +759,7 @@ const showSteamNotice = (
   close.className = 'hb_extractor-notice-close'
   close.title = 'Dismiss'
   close.textContent = '×'
-  close.addEventListener('click', () => notice.remove())
+  close.addEventListener('click', () => void dismissNotice(notice))
 
   const body = document.createElement('p')
   const messageLines = Array.isArray(message) ? message : [message]
@@ -648,17 +783,70 @@ const showSteamNotice = (
   }
 
   notice.append(heading, close, body, actions)
-  ensureNoticeRoot().append(notice)
+  pendingSteamNotices.add(notice)
+  if (options.autoDismissMs !== undefined) autoDismissNotices.add(notice)
+
+  noticeRenderQueue = noticeRenderQueue.then(async () => {
+    if (!pendingSteamNotices.has(notice)) return
+
+    const root = ensureNoticeRoot()
+
+    while (root.childElementCount >= MAX_NOTICES) {
+      const oldestNotice =
+        Array.from(root.children).find(
+          (child): child is HTMLElement =>
+            child instanceof HTMLElement && autoDismissNotices.has(child)
+        ) ?? root.firstElementChild
+      if (!(oldestNotice instanceof HTMLElement)) break
+      await dismissNotice(oldestNotice)
+      if (!pendingSteamNotices.has(notice)) return
+    }
+
+    pendingSteamNotices.delete(notice)
+    root.append(notice)
+    animateNoticeIn(notice)
+
+    if (options.autoDismissMs !== undefined) {
+      scheduleNoticeDismissal(notice, options.autoDismissMs)
+    }
+  })
 }
 
 const clearSteamNotice = (id: string): void => {
-  document.getElementById(id)?.remove()
+  for (const notice of pendingSteamNotices) {
+    if (notice.dataset.noticeId === id) pendingSteamNotices.delete(notice)
+  }
+
+  const root = document.getElementById('hb_extractor-notices')
+  if (!root) return
+
+  for (const child of Array.from(root.children)) {
+    if (child instanceof HTMLElement && child.dataset.noticeId === id) {
+      clearNoticeTimer(child)
+      child.remove()
+    }
+  }
 }
 
 export const clearSteamNotices = (): void => {
-  document
-    .querySelectorAll<HTMLElement>('[id^="hb_extractor-notice-steam-"]')
-    .forEach((notice) => notice.remove())
+  for (const notice of pendingSteamNotices) {
+    if (notice.dataset.noticeId?.startsWith(STEAM_NOTICE_ID_PREFIX)) {
+      pendingSteamNotices.delete(notice)
+    }
+  }
+
+  const root = document.getElementById('hb_extractor-notices')
+  if (!root) return
+
+  for (const child of Array.from(root.children)) {
+    if (
+      child instanceof HTMLElement &&
+      child.dataset.noticeId?.startsWith(STEAM_NOTICE_ID_PREFIX)
+    ) {
+      clearNoticeTimer(child)
+      child.remove()
+    }
+  }
 }
 
 export const showSteamOwnedNotice = (usedCache: boolean, onOpen?: () => void): void => {
@@ -714,7 +902,8 @@ export const showSteamSupportNotice = (appId: number): void => {
         text: 'Open Support page',
         href: `https://help.steampowered.com/en/wizard/HelpWithGame?appid=${appId}`,
       },
-    ]
+    ],
+    { allowDuplicates: true, autoDismissMs: NOTICE_AUTO_DISMISS_DURATION }
   )
 }
 

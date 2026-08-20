@@ -135,6 +135,8 @@
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
   font-size: 13.5px;
   line-height: 1.45;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
 }
 
 .hb_extractor-notice p {
