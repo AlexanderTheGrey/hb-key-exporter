@@ -1,4 +1,6 @@
 import LZString from 'lz-string'
+import { hasRedeemedKeyValue, type RedeemedKeyValue } from './redeemed-key'
+import { normalizeCountryCodes, type RegionRestrictions } from './region'
 
 export interface Order {
   created: string
@@ -17,7 +19,7 @@ export interface Order {
       is_gift: boolean
       key_type: string
       keyindex: number
-      redeemed_key_val?: string
+      redeemed_key_val?: RedeemedKeyValue
       steam_app_id?: number | null
       sold_out?: boolean
       direct_redeem?: boolean
@@ -35,15 +37,16 @@ export interface RedeemedDate {
   iso: string
 }
 
-export interface Product {
+export interface Product extends RegionRestrictions {
   machine_name: string
   category: 'Store' | 'Bundle' | 'Other' | 'Choice'
   category_id: string
   category_human_name: string
   human_name: string
   key_type: string
+  direct_redeem: boolean
   type: 'Key' | 'Gift' | ''
-  redeemed_key_val: string
+  redeemed_key_val: RedeemedKeyValue | ''
   is_gift: boolean
   is_expired: boolean
   owned: 'Yes' | 'No' | ''
@@ -312,6 +315,10 @@ export const getProducts = (
             : 'No'
         : ''
 
+      const redeemedKey = hasRedeemedKeyValue(product.redeemed_key_val)
+        ? product.redeemed_key_val
+        : ''
+
       return {
         machine_name: product.machine_name || '',
         category: getCategory(order.product.category),
@@ -319,8 +326,9 @@ export const getProducts = (
         category_human_name: order.product.human_name || '',
         human_name: product.human_name || product.machine_name || '',
         key_type: product.key_type || '',
-        type: product.is_gift ? 'Gift' : product.redeemed_key_val ? 'Key' : '',
-        redeemed_key_val: product.redeemed_key_val || '',
+        direct_redeem: product.direct_redeem || false,
+        type: product.is_gift ? 'Gift' : redeemedKey ? 'Key' : '',
+        redeemed_key_val: redeemedKey,
         is_gift: product.is_gift || false,
         is_expired: isExpired,
         expiry_date: expiry,
@@ -332,30 +340,62 @@ export const getProducts = (
           steamAppId && owned === 'Yes'
             ? (redeemedMap[String(steamAppId)] ?? undefined)
             : undefined,
+        exclusive_countries: normalizeCountryCodes(product.exclusive_countries),
+        disallowed_countries: normalizeCountryCodes(product.disallowed_countries),
       }
     })
   )
 }
 
-export const redeem = async (product: Product, gift = false): Promise<string> => {
-  const data = await fetch('https://www.humblebundle.com/humbler/redeemkey', {
+type RedeemResponse = {
+  success?: boolean
+  error_msg?: string
+  error?: string
+  giftkey?: unknown
+  key?: unknown
+}
+
+export const redeem = async (product: Product, gift = false): Promise<RedeemedKeyValue> => {
+  if (product.keyindex == null) throw new Error('Missing Humble key index')
+
+  const body = new URLSearchParams({
+    keytype: product.machine_name,
+    key: product.category_id,
+    keyindex: String(product.keyindex),
+  })
+
+  if (gift) body.set('gift', 'true')
+
+  const response = await fetch('https://www.humblebundle.com/humbler/redeemkey', {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
     },
-    body: `keytype=${product.machine_name}&key=${product.category_id}&keyindex=${product.keyindex}${gift ? '&gift=true' : ''}`,
+    body,
     method: 'POST',
     mode: 'cors',
-  }).then((res) => res.json())
+  })
+  let data: RedeemResponse
 
-  if (!data?.success) {
-    throw new Error(data?.error_msg || data?.error || 'Failed to reveal key')
+  try {
+    data = (await response.json()) as RedeemResponse
+  } catch {
+    throw new Error(`Humble returned an invalid response (HTTP ${response.status})`)
+  }
+
+  if (!response.ok || !data.success) {
+    throw new Error(
+      data.error_msg || data.error || `Failed to reveal key (HTTP ${response.status})`
+    )
   }
 
   const value = gift ? data.giftkey : data.key
-  if (!value) throw new Error('Failed to reveal key')
+  if (!hasRedeemedKeyValue(value)) throw new Error('Failed to reveal key')
 
-  return gift ? `https://www.humblebundle.com/gift?key=${value}` : value
+  if (!gift) return value
+  if (typeof value !== 'string') throw new Error('Humble returned an invalid gift key')
+
+  return `https://www.humblebundle.com/gift?key=${value}`
 }
 
 type SteamUserData = {
@@ -492,7 +532,7 @@ const fetchOwnedApps = async (): Promise<number[] | null> =>
       return null
     })
 
-type FlashToastType = 'default' | 'error'
+type FlashToastType = 'default' | 'warning' | 'error'
 
 const getFlashToastDuration = (message: string): number => {
   const trimmed = message.trim()
@@ -514,7 +554,7 @@ export const showFlashToast = (message: string, type: FlashToastType = 'default'
   flashToastEl.textContent = message
   flashToastEl.hidden = false
   flashToastEl.className = `hb_extractor-flash-toast hb_extractor-flash-toast_${type}`
-  flashToastEl.setAttribute('role', type === 'error' ? 'alert' : 'status')
+  flashToastEl.setAttribute('role', type === 'default' ? 'status' : 'alert')
 
   void flashToastEl.offsetWidth
   flashToastEl.classList.add('hb_extractor-flash-toast_flash')
@@ -539,10 +579,137 @@ export const showErrorToast = (error: unknown, fallback = 'Failed'): void => {
   showFlashToast(message, 'error')
 }
 
+export function copyToClipboard(text: string): boolean {
+  try {
+    GM_setClipboard(text, 'text/plain')
+    return true
+  } catch (error) {
+    showErrorToast(error, 'Failed to copy to clipboard')
+    return false
+  }
+}
+
 type SteamNoticeLink = {
   text: string
   href: string
   onClick?: () => void
+}
+
+const STEAM_NOTICE_ID_PREFIX = 'hb_extractor-notice-steam-'
+const MAX_NOTICES = 5
+const NOTICE_EXIT_DURATION = 180
+const NOTICE_REFLOW_DURATION = 180
+const NOTICE_ENTER_DURATION = 240
+const NOTICE_AUTO_DISMISS_DURATION = 10_000
+const NOTICE_EASING = 'cubic-bezier(0.16, 1, 0.3, 1)'
+const pendingSteamNotices = new Set<HTMLElement>()
+const noticeDismissals = new WeakMap<HTMLElement, Promise<void>>()
+const noticeTimers = new WeakMap<HTMLElement, number>()
+const autoDismissNotices = new WeakSet<HTMLElement>()
+let noticeSequence = 0
+let noticeRenderQueue = Promise.resolve()
+
+const prefersReducedMotion = (): boolean =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+const animateNoticeIn = (notice: HTMLElement): void => {
+  if (prefersReducedMotion()) return
+
+  notice.animate(
+    [
+      { opacity: 0, transform: 'translate3d(6px, 14px, 0)' },
+      { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+    ],
+    { duration: NOTICE_ENTER_DURATION, easing: NOTICE_EASING }
+  )
+}
+
+const clearNoticeTimer = (notice: HTMLElement): void => {
+  const timer = noticeTimers.get(notice)
+  if (timer === undefined) return
+
+  window.clearTimeout(timer)
+  noticeTimers.delete(notice)
+}
+
+const dismissNotice = (notice: HTMLElement): Promise<void> => {
+  const activeDismissal = noticeDismissals.get(notice)
+  if (activeDismissal) return activeDismissal
+
+  clearNoticeTimer(notice)
+
+  const dismissal = (async () => {
+    const root = notice.parentElement
+    if (!(root instanceof HTMLElement) || !notice.isConnected || prefersReducedMotion()) {
+      notice.remove()
+      return
+    }
+
+    const siblings = Array.from(root.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement && child !== notice
+    )
+    const previousTops = new Map(
+      siblings.map((sibling) => [sibling, sibling.getBoundingClientRect().top])
+    )
+    const rootRect = root.getBoundingClientRect()
+    const noticeRect = notice.getBoundingClientRect()
+    const previousRootWidth = root.style.width
+
+    // Keep the container stable while the departing notice leaves normal flow.
+    root.style.width = `${rootRect.width}px`
+    Object.assign(notice.style, {
+      position: 'absolute',
+      top: `${noticeRect.top - rootRect.top}px`,
+      left: `${noticeRect.left - rootRect.left}px`,
+      width: `${noticeRect.width}px`,
+      boxSizing: 'border-box',
+    })
+
+    const animations = siblings.flatMap((sibling) => {
+      const deltaY = previousTops.get(sibling)! - sibling.getBoundingClientRect().top
+      if (Math.abs(deltaY) < 0.5) return []
+
+      return [
+        sibling.animate([{ top: `${deltaY}px` }, { top: '0px' }], {
+          duration: NOTICE_REFLOW_DURATION,
+          easing: NOTICE_EASING,
+        }),
+      ]
+    })
+
+    animations.push(
+      notice.animate(
+        [
+          { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+          { opacity: 0, transform: 'translate3d(6px, -10px, 0)' },
+        ],
+        { duration: NOTICE_EXIT_DURATION, easing: 'ease-in', fill: 'forwards' }
+      )
+    )
+
+    await Promise.all(animations.map((animation) => animation.finished.catch(() => undefined)))
+    notice.remove()
+    root.style.width = previousRootWidth
+  })()
+
+  noticeDismissals.set(notice, dismissal)
+  return dismissal
+}
+
+const scheduleNoticeDismissal = (notice: HTMLElement, duration: number): void => {
+  const startTimer = () => {
+    clearNoticeTimer(notice)
+    noticeTimers.set(
+      notice,
+      window.setTimeout(() => void dismissNotice(notice), duration)
+    )
+  }
+
+  notice.addEventListener('mouseenter', () => clearNoticeTimer(notice))
+  notice.addEventListener('mouseleave', startTimer)
+  notice.addEventListener('focusin', () => clearNoticeTimer(notice))
+  notice.addEventListener('focusout', startTimer)
+  startTimer()
 }
 
 const ensureNoticeRoot = (): HTMLElement => {
@@ -557,16 +724,34 @@ const ensureNoticeRoot = (): HTMLElement => {
   return root
 }
 
+type SteamNoticeOptions = {
+  allowDuplicates?: boolean
+  autoDismissMs?: number
+}
+
+const hasSteamNotice = (id: string): boolean => {
+  if (Array.from(pendingSteamNotices).some((notice) => notice.dataset.noticeId === id)) {
+    return true
+  }
+
+  const root = document.getElementById('hb_extractor-notices')
+  return Array.from(root?.children ?? []).some(
+    (child) => child instanceof HTMLElement && child.dataset.noticeId === id
+  )
+}
+
 const showSteamNotice = (
   id: string,
   title: string,
   message: string | string[],
-  links: SteamNoticeLink[]
+  links: SteamNoticeLink[],
+  options: SteamNoticeOptions = {}
 ): void => {
-  if (document.getElementById(id)) return
+  if (!options.allowDuplicates && hasSteamNotice(id)) return
 
   const notice = document.createElement('div')
-  notice.id = id
+  notice.id = `${id}-${++noticeSequence}`
+  notice.dataset.noticeId = id
   notice.className = 'hb_extractor-notice'
 
   const heading = document.createElement('strong')
@@ -577,7 +762,7 @@ const showSteamNotice = (
   close.className = 'hb_extractor-notice-close'
   close.title = 'Dismiss'
   close.textContent = '×'
-  close.addEventListener('click', () => notice.remove())
+  close.addEventListener('click', () => void dismissNotice(notice))
 
   const body = document.createElement('p')
   const messageLines = Array.isArray(message) ? message : [message]
@@ -601,17 +786,70 @@ const showSteamNotice = (
   }
 
   notice.append(heading, close, body, actions)
-  ensureNoticeRoot().append(notice)
+  pendingSteamNotices.add(notice)
+  if (options.autoDismissMs !== undefined) autoDismissNotices.add(notice)
+
+  noticeRenderQueue = noticeRenderQueue.then(async () => {
+    if (!pendingSteamNotices.has(notice)) return
+
+    const root = ensureNoticeRoot()
+
+    while (root.childElementCount >= MAX_NOTICES) {
+      const oldestNotice =
+        Array.from(root.children).find(
+          (child): child is HTMLElement =>
+            child instanceof HTMLElement && autoDismissNotices.has(child)
+        ) ?? root.firstElementChild
+      if (!(oldestNotice instanceof HTMLElement)) break
+      await dismissNotice(oldestNotice)
+      if (!pendingSteamNotices.has(notice)) return
+    }
+
+    pendingSteamNotices.delete(notice)
+    root.append(notice)
+    animateNoticeIn(notice)
+
+    if (options.autoDismissMs !== undefined) {
+      scheduleNoticeDismissal(notice, options.autoDismissMs)
+    }
+  })
 }
 
 const clearSteamNotice = (id: string): void => {
-  document.getElementById(id)?.remove()
+  for (const notice of pendingSteamNotices) {
+    if (notice.dataset.noticeId === id) pendingSteamNotices.delete(notice)
+  }
+
+  const root = document.getElementById('hb_extractor-notices')
+  if (!root) return
+
+  for (const child of Array.from(root.children)) {
+    if (child instanceof HTMLElement && child.dataset.noticeId === id) {
+      clearNoticeTimer(child)
+      child.remove()
+    }
+  }
 }
 
 export const clearSteamNotices = (): void => {
-  document
-    .querySelectorAll<HTMLElement>('[id^="hb_extractor-notice-steam-"]')
-    .forEach((notice) => notice.remove())
+  for (const notice of pendingSteamNotices) {
+    if (notice.dataset.noticeId?.startsWith(STEAM_NOTICE_ID_PREFIX)) {
+      pendingSteamNotices.delete(notice)
+    }
+  }
+
+  const root = document.getElementById('hb_extractor-notices')
+  if (!root) return
+
+  for (const child of Array.from(root.children)) {
+    if (
+      child instanceof HTMLElement &&
+      child.dataset.noticeId?.startsWith(STEAM_NOTICE_ID_PREFIX)
+    ) {
+      clearNoticeTimer(child)
+      child.remove()
+    }
+  }
 }
 
 export const showSteamOwnedNotice = (usedCache: boolean, onOpen?: () => void): void => {
@@ -667,7 +905,8 @@ export const showSteamSupportNotice = (appId: number): void => {
         text: 'Open Support page',
         href: `https://help.steampowered.com/en/wizard/HelpWithGame?appid=${appId}`,
       },
-    ]
+    ],
+    { allowDuplicates: true, autoDismissMs: NOTICE_AUTO_DISMISS_DURATION }
   )
 }
 

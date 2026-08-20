@@ -7,12 +7,14 @@ import {
   getProducts,
   loadOrders,
   loadOwnedApps,
+  showErrorToast,
   showSteamAccountNotice,
   showSteamOwnedNotice,
   type Product,
 } from './util'
 
 import { Table } from './components/Table'
+import { captureTableState, type TableState } from './table-state'
 import { Refresh } from './components/Refresh'
 import { Actions } from './components/Actions'
 import type { Api } from 'datatables.net-dt'
@@ -24,8 +26,11 @@ export function App() {
     createSignal(false)
   const [pendingSteamAccountNotice, setPendingSteamAccountNotice] = createSignal(false)
   const [steamId, setSteamId] = createSignal<string | null>(null)
+  const [pendingTableState, setPendingTableState] = createSignal<TableState | null>(null)
+  const [dt, setDt] = createSignal<Api<Product> | null>(null)
 
   let checkSteamAccountTimer: number | undefined
+  let refreshInFlight: Promise<void> | null = null
 
   const refreshAfterSteamPageOpen = () => {
     window.setTimeout(() => refreshProducts(), 3000)
@@ -81,7 +86,7 @@ export function App() {
     }
   }
 
-  const [products, { refetch: refreshProducts }] = createResource<Product[], boolean>(
+  const [products, { refetch: refetchProducts }] = createResource<Product[], boolean>(
     async (_, info) => {
       console.debug('Loading products...')
       const orders = loadOrders()
@@ -123,7 +128,25 @@ export function App() {
     }
   )
 
-  const [dt, setDt] = createSignal<Api<Product> | null>(null)
+  const refreshProducts = (): Promise<void> => {
+    if (refreshInFlight) return refreshInFlight
+
+    const table = dt()
+    if (table) setPendingTableState(captureTableState(table))
+
+    refreshInFlight = (async () => {
+      try {
+        await refetchProducts()
+      } catch (error) {
+        setPendingTableState(null)
+        showErrorToast(error, 'Failed to refresh products')
+      } finally {
+        refreshInFlight = null
+      }
+    })()
+
+    return refreshInFlight
+  }
 
   onMount(() => {
     const checkSteamAccountChangedAfterVisibility = () => {
@@ -158,7 +181,15 @@ export function App() {
           <Refresh refresh={refreshProducts} />
         </div>
         <Show when={products()} keyed fallback={<p>Loading products...</p>}>
-          {(loadedProducts) => <Table products={loadedProducts} steamId={steamId} setDt={setDt} />}
+          {(loadedProducts) => (
+            <Table
+              products={loadedProducts}
+              steamId={steamId}
+              setDt={setDt}
+              initialState={pendingTableState()}
+              onStateRestored={() => setPendingTableState(null)}
+            />
+          )}
         </Show>
         <Actions dt={dt} />
       </div>
