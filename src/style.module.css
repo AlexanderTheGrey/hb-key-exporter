@@ -75,10 +75,20 @@ tr.expired {
 
 .page_jump {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 5px;
   margin-inline-end: 8px;
   white-space: nowrap;
+}
+
+:global(.dt-layout-end):has(> .page_jump) {
+  flex-wrap: wrap;
+  row-gap: 0.5em;
+}
+
+.page_jump + :global(.dt-paging) {
+  flex: 0 0 auto;
 }
 
 .page_jump_input {
