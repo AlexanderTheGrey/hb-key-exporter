@@ -121,8 +121,18 @@ const exportCSV = (products: Product[], delimiter: string): string => {
   ].join('\r\n')
 }
 
+type ExportType = 'asf' | 'keys' | 'csv'
+
+const getEmptyExportMessage = (type: ExportType, products: Product[]): string => {
+  if (!products.length) return 'Empty export: no rows in table'
+  if (type === 'asf') return 'Empty export: no revealed Steam keys in table'
+  if (type === 'keys') return 'Empty export: no revealed keys in table'
+
+  return 'Empty export'
+}
+
 export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
-  const [exportType, setExportType] = createSignal('csv')
+  const [exportType, setExportType] = createSignal<ExportType>('csv')
   const [claim, setClaim] = createSignal(false)
   const [claimType, setClaimType] = createSignal('key')
   const [exporting, setExporting] = createSignal(false)
@@ -226,6 +236,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           typeCounts: plan.typeCounts,
           keylessCount: plan.keylessCount,
           exportCopied: false,
+          exportEmpty: false,
         }
       }
 
@@ -236,6 +247,16 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           : exportType() === 'keys'
             ? exportKeys(toExport)
             : exportCSV(toExport, delimiter)
+      if (!text) {
+        showFlashToast(getEmptyExportMessage(exportType(), toExport), 'warning')
+
+        if (report) {
+          setPendingConfirmation(null)
+          setClaimReport({ ...report, exportCopied: false, exportEmpty: true })
+        }
+        return
+      }
+
       const exportCopied = copyToClipboard(text)
 
       if (report) {
@@ -309,7 +330,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           id="export"
           class={styles.select}
           value={exportType()}
-          onChange={(event) => setExportType(event.target.value)}
+          onChange={(event) => setExportType(event.currentTarget.value as ExportType)}
         >
           <option value="asf">ASF</option>
           <option value="keys">Keys</option>

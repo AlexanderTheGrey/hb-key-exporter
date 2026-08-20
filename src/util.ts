@@ -529,7 +529,7 @@ const fetchOwnedApps = async (): Promise<number[] | null> =>
       return null
     })
 
-type FlashToastType = 'default' | 'error'
+type FlashToastType = 'default' | 'warning' | 'error'
 
 const getFlashToastDuration = (message: string): number => {
   const trimmed = message.trim()
@@ -551,7 +551,7 @@ export const showFlashToast = (message: string, type: FlashToastType = 'default'
   flashToastEl.textContent = message
   flashToastEl.hidden = false
   flashToastEl.className = `hb_extractor-flash-toast hb_extractor-flash-toast_${type}`
-  flashToastEl.setAttribute('role', type === 'error' ? 'alert' : 'status')
+  flashToastEl.setAttribute('role', type === 'default' ? 'status' : 'alert')
 
   void flashToastEl.offsetWidth
   flashToastEl.classList.add('hb_extractor-flash-toast_flash')

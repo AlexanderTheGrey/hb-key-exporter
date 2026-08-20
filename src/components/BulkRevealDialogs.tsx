@@ -416,13 +416,19 @@ export function BulkRevealResults({
 
           <div
             class={`${styles.export_status} ${
-              report.exportCopied ? styles.export_status_success : styles.export_status_failure
+              report.exportCopied
+                ? styles.export_status_success
+                : report.exportEmpty
+                  ? styles.export_status_warning
+                  : styles.export_status_failure
             }`}
           >
             {report.exportCopied ? (
               <>
                 Export copied to clipboard. <strong>Paste it before copying the log.</strong>
               </>
+            ) : report.exportEmpty ? (
+              'The reveal finished, but the selected export was empty. Your clipboard was left unchanged.'
             ) : (
               'The reveal finished, but the export could not be copied to your clipboard.'
             )}

@@ -65,6 +65,12 @@
   border-color: #b6d4fe;
 }
 
+.hb_extractor-flash-toast_warning {
+  background: #fff3cd;
+  color: #664d03;
+  border-color: #ffecb5;
+}
+
 .hb_extractor-flash-toast_error {
   background: #f8d7da;
   color: #842029;

@@ -397,6 +397,12 @@ tr.expired {
   border-color: #b9dfc7;
 }
 
+.export_status_warning {
+  background: #fff3cd;
+  color: #664d03;
+  border-color: #ffecb5;
+}
+
 .export_status_failure {
   background: #fbeaec;
   color: #9c2636;

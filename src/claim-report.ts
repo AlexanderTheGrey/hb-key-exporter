@@ -35,6 +35,7 @@ export type ClaimReport<T extends ClaimProduct = ClaimProduct> = {
   typeCounts: ClaimTypeCount[]
   keylessCount: number
   exportCopied: boolean
+  exportEmpty: boolean
 }
 
 export type ClaimResultGroup<T extends ClaimProduct = ClaimProduct> = {
