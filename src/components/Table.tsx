@@ -264,6 +264,60 @@ export function Table({
 
     let dt!: Api<Product>
 
+    const pageJumpInput = document.createElement('input')
+    pageJumpInput.className = styles.page_jump_input
+    pageJumpInput.type = 'text'
+    pageJumpInput.inputMode = 'numeric'
+    pageJumpInput.pattern = '[0-9]*'
+    pageJumpInput.autocomplete = 'off'
+    pageJumpInput.enterKeyHint = 'go'
+    pageJumpInput.setAttribute('aria-label', 'Jump to page')
+    pageJumpInput.title = 'Enter a page number and press Enter'
+
+    const pageJumpTotal = document.createElement('span')
+    const pageJump = document.createElement('label')
+    pageJump.className = styles.page_jump
+    pageJump.append('Jump to', pageJumpInput, 'of', pageJumpTotal)
+
+    const syncPageJump = (): void => {
+      const info = dt.page.info()
+      const hasPages = info.pages > 0
+
+      pageJumpInput.disabled = !hasPages
+      pageJumpInput.value = hasPages ? String(info.page + 1) : ''
+      pageJumpInput.maxLength = Math.max(1, String(info.pages).length)
+      pageJumpInput.style.width = `${Math.max(4, String(info.pages).length + 2)}ch`
+      pageJumpTotal.textContent = String(info.pages)
+    }
+
+    const jumpToPage = (): void => {
+      const info = dt.page.info()
+      const requestedPage = Number(pageJumpInput.value)
+
+      if (!Number.isInteger(requestedPage) || requestedPage < 1 || info.pages === 0) {
+        syncPageJump()
+        return
+      }
+
+      const page = Math.min(requestedPage, info.pages) - 1
+      pageJumpInput.value = String(page + 1)
+
+      if (page !== info.page) dt.page(page).draw('page')
+    }
+
+    pageJumpInput.addEventListener('focus', () => pageJumpInput.select())
+    pageJumpInput.addEventListener('change', jumpToPage)
+    pageJumpInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        jumpToPage()
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        syncPageJump()
+        pageJumpInput.blur()
+      }
+    })
+
     const revealProduct = async (row: Product, gift: boolean): Promise<void> => {
       const keyless = isKeylessProduct(row)
       if (keyless && !(await requestKeylessConfirmation(row, gift))) return
@@ -613,6 +667,7 @@ export function Table({
                 columns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
               },
             },
+            bottomEnd: [pageJump, 'paging'],
           },
           createdRow: function (row, data: Product) {
             if (data.is_expired) {
@@ -658,8 +713,10 @@ export function Table({
       })
     }
 
+    syncPageJump()
     dt.on('page', rememberPagingTop)
     dt.on('draw', restorePagingTop)
+    dt.on('draw', syncPageJump)
 
     // Warnings when selecting certain column filters
 
@@ -725,6 +782,7 @@ export function Table({
     onCleanup(() => {
       dt.off('page', rememberPagingTop)
       dt.off('draw', restorePagingTop)
+      dt.off('draw', syncPageJump)
 
       searchBuilderRoot?.removeEventListener('change', refreshWarnings)
       observer?.disconnect()

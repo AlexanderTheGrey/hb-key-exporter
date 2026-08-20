@@ -73,6 +73,26 @@ tr.expired {
   align-items: center;
 }
 
+.page_jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-inline-end: 8px;
+  white-space: nowrap;
+}
+
+.page_jump_input {
+  box-sizing: border-box;
+  min-width: 4ch;
+  padding: 0.5em 0.6em;
+  background: #fff;
+  color: #000;
+  border: 1px solid #aaa;
+  border-radius: 3px;
+  font: inherit;
+  text-align: center;
+}
+
 .yes_no_badge {
   display: inline-block;
   min-width: 3ch;
