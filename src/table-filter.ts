@@ -25,6 +25,8 @@ const inverseConditions: Record<string, string> = {
   between: '!between',
   contains: '!contains',
   ends: '!ends',
+  expired: 'notExpired',
+  notExpired: 'expired',
   null: '!null',
   starts: '!starts',
 }

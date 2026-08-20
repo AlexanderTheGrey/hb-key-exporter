@@ -163,18 +163,20 @@ export function Table({
       ].join(' ')
     }
 
-    const localDateKey = (value: unknown): string => {
-      const s = String(value)
-      if (isUtcDateMarker(s)) return s.slice(0, 10)
-
-      const date = parseDate(s)
-      if (!date) return s
-
+    const formatLocalDateKey = (date: Date): string => {
       const year = date.getFullYear()
       const month = String(date.getMonth() + 1).padStart(2, '0')
       const day = String(date.getDate()).padStart(2, '0')
 
       return `${year}-${month}-${day}`
+    }
+
+    const localDateKey = (value: unknown): string => {
+      const s = String(value)
+      if (isUtcDateMarker(s)) return s.slice(0, 10)
+
+      const date = parseDate(s)
+      return date ? formatLocalDateKey(date) : s
     }
 
     const displayDate = (data: unknown, type: string): string => {
@@ -206,6 +208,7 @@ export function Table({
 
     type DateCondition = {
       search?: (value: string, comparison: string[]) => boolean
+      [key: string]: unknown
     }
 
     const dateConditions = (
@@ -261,6 +264,33 @@ export function Table({
       const max = searchDateKey(comparison[1] ?? '')
       return left !== '' && min !== '' && max !== '' && (left < min || left > max)
     })
+
+    const todayDateKey = (): string => formatLocalDateKey(new Date())
+    const isDateKey = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value)
+    const expiryDateSearchBuilderType = 'date-expiry'
+    const emptyDateCondition = dateConditions?.null
+    const expiryDateConditions =
+      dateConditions && emptyDateCondition
+        ? {
+            ...dateConditions,
+            expired: {
+              ...emptyDateCondition,
+              conditionName: 'Expired',
+              search: (value: string) => {
+                const date = searchDateKey(value)
+                return isDateKey(date) && date < todayDateKey()
+              },
+            },
+            notExpired: {
+              ...emptyDateCondition,
+              conditionName: 'Not Expired',
+              search: (value: string) => {
+                const date = searchDateKey(value)
+                return date === '' || (isDateKey(date) && date >= todayDateKey())
+              },
+            },
+          }
+        : undefined
 
     let dt!: Api<Product>
 
@@ -546,7 +576,12 @@ export function Table({
                 ]) as unknown as string
               },
             },
-            { title: 'Exp. Date', data: 'expiry_date', type: 'date' },
+            {
+              title: 'Exp. Date',
+              data: 'expiry_date',
+              type: 'date',
+              ...(expiryDateConditions && { searchBuilderType: expiryDateSearchBuilderType }),
+            },
             {
               title: '',
               orderable: false,
@@ -665,6 +700,9 @@ export function Table({
             top1: {
               searchBuilder: {
                 columns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                ...(expiryDateConditions && {
+                  conditions: { [expiryDateSearchBuilderType]: expiryDateConditions },
+                }),
               },
             },
             bottomEnd: [pageJump, 'paging'],
