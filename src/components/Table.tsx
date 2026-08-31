@@ -648,6 +648,11 @@ export function Table({
             [10, 25, 50, 100, 500, 1000, 5000, -1],
             [10, 25, 50, 100, 500, '1,000', '5,000', 'All'],
           ],
+          language: {
+            searchBuilder: {
+              data: 'Field',
+            },
+          },
           columnDefs: [
             {
               targets: [7, 9],
@@ -1110,9 +1115,35 @@ export function Table({
       }
     }
 
+    const handleSearchBuilderChange = (event: Event): void => {
+      refreshWarnings()
+
+      const target = event.target
+      if (!(target instanceof HTMLSelectElement) || !target.classList.contains('dtsb-data')) return
+
+      const criterion = target.closest('.dtsb-criteria')
+      if (!criterion || !event.isTrusted) return
+
+      // SearchBuilder resets its internal condition/value state when the field changes, but v1.8.2
+      // can leave old multi-value controls in the DOM. Run after its handler and remove any stale
+      // controls only when the freshly populated condition selector is still at its placeholder.
+      queueMicrotask(() => {
+        if (!criterion.isConnected) return
+
+        const condition = criterion.querySelector<HTMLSelectElement>('select.dtsb-condition')
+        const valueContainer = criterion.querySelector<HTMLElement>('.dtsb-inputCont')
+        if (!condition || condition.value !== '' || !valueContainer) return
+
+        const jquery = DataTable.use('jq') as (element: HTMLElement) => SearchBuilderValue
+        for (const child of Array.from(valueContainer.children)) {
+          jquery(child as HTMLElement).remove()
+        }
+      })
+    }
+
     refreshWarnings()
 
-    searchBuilderRoot?.addEventListener('change', refreshWarnings)
+    searchBuilderRoot?.addEventListener('change', handleSearchBuilderChange)
 
     const observer = searchBuilderRoot ? new MutationObserver(refreshWarnings) : null
 
@@ -1137,7 +1168,7 @@ export function Table({
       cancelRegionPopoverHide()
       regionPopover.remove()
 
-      searchBuilderRoot?.removeEventListener('change', refreshWarnings)
+      searchBuilderRoot?.removeEventListener('change', handleSearchBuilderChange)
       observer?.disconnect()
       for (const warning of warnings) warning.element.remove()
 

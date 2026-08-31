@@ -100,9 +100,16 @@ tr.expired {
   white-space: nowrap;
 }
 
-:global(.dt-layout-end):has(> .page_jump) {
+:global(.dt-layout-row):has(.page_jump) {
   flex-wrap: wrap;
+  column-gap: 1em;
   row-gap: 0.5em;
+}
+
+:global(.dt-layout-end):has(> .page_jump) {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-inline-start: auto;
 }
 
 .page_jump + :global(.dt-paging) {
