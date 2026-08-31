@@ -38,6 +38,7 @@ tr.expired {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: end;
   gap: 10px;
   align-items: center;
@@ -55,11 +56,28 @@ tr.expired {
   transform: translateY(0.25px);
 }
 
+.export_separator {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
 .btn {
   background-color: #e9e9ed;
   border: 1px solid #8f8f9d;
   border-radius: 5px;
   padding: 1px 4px;
+}
+
+.export_secondary_button {
+  background: #f1f3f6;
+  color: #3d434c;
+  border-color: #b8bec7;
+}
+
+.export_secondary_button:not(:disabled):hover,
+.export_secondary_button:not(:disabled):focus-visible {
+  background: #e2e5e9;
 }
 
 .row_actions {

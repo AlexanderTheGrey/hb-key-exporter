@@ -7,6 +7,7 @@ import {
   isKeylessProduct,
   type ClaimPlan,
   type ClaimReport,
+  type ExportDestination,
 } from '../claim-report'
 import { copyToClipboard, showFlashToast, type Product } from '../util'
 // @ts-expect-error missing types
@@ -166,6 +167,7 @@ export function KeylessRedemptionConfirmation({
 export function BulkRevealConfirmation({
   plan,
   gift,
+  destination,
   processing,
   progress,
   onCancel,
@@ -173,6 +175,7 @@ export function BulkRevealConfirmation({
 }: {
   plan: ClaimPlan<Product>
   gift: boolean
+  destination: ExportDestination
   processing: Accessor<boolean>
   progress: Accessor<number>
   onCancel: () => void
@@ -180,6 +183,8 @@ export function BulkRevealConfirmation({
 }) {
   const count = plan.products.length
   const action = gift ? 'create gift links for' : 'reveal'
+  const destinationVerb = destination === 'download' ? 'download' : 'copy'
+  const destinationProgress = destination === 'download' ? 'Downloading' : 'Copying'
   const keylessWarning = gift
     ? [
         'These may redeem directly to the third-party account linked to your Humble Bundle',
@@ -210,7 +215,9 @@ export function BulkRevealConfirmation({
           <div>
             <p class={styles.modal_eyebrow}>Bulk reveal confirmation</p>
             <h2 id="hb_extractor-confirm-title" class={styles.modal_title}>
-              {gift ? 'Create gift links and export?' : 'Reveal keys and export?'}
+              {gift
+                ? `Create gift links and ${destinationVerb}?`
+                : `Reveal keys and ${destinationVerb}?`}
             </h2>
           </div>
           <button
@@ -332,12 +339,12 @@ export function BulkRevealConfirmation({
             {processing() ? (
               <>
                 <i class="hb hb-spin hb-spinner" aria-hidden="true"></i>{' '}
-                {gift ? 'Creating & Exporting…' : 'Revealing & Exporting…'}
+                {gift ? 'Creating' : 'Revealing'} & {destinationProgress}…
               </>
             ) : gift ? (
-              'Create & Export'
+              `Create & ${destination === 'download' ? 'Download' : 'Copy'}`
             ) : (
-              'Reveal & Export'
+              `Reveal & ${destination === 'download' ? 'Download' : 'Copy'}`
             )}
           </button>
         </footer>
@@ -416,21 +423,33 @@ export function BulkRevealResults({
 
           <div
             class={`${styles.export_status} ${
-              report.exportCopied
+              report.exportSucceeded
                 ? styles.export_status_success
                 : report.exportEmpty
                   ? styles.export_status_warning
                   : styles.export_status_failure
             }`}
           >
-            {report.exportCopied ? (
-              <>
-                Export copied to clipboard. <strong>Paste it before copying the log.</strong>
-              </>
+            {report.exportSucceeded ? (
+              report.exportDestination === 'clipboard' ? (
+                <>
+                  Export copied to clipboard. <strong>Paste it before copying the log.</strong>
+                </>
+              ) : (
+                <>
+                  Download started: <strong>{report.exportFilename}</strong>
+                </>
+              )
             ) : report.exportEmpty ? (
-              'The reveal finished, but the selected export was empty. Your clipboard was left unchanged.'
-            ) : (
+              report.exportDestination === 'clipboard' ? (
+                'The reveal finished, but the selected export was empty. Your clipboard was left unchanged.'
+              ) : (
+                'The reveal finished, but the selected export was empty. No download was started.'
+              )
+            ) : report.exportDestination === 'clipboard' ? (
               'The reveal finished, but the export could not be copied to your clipboard.'
+            ) : (
+              'The reveal finished, but the download could not be started.'
             )}
           </div>
 

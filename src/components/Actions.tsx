@@ -6,6 +6,7 @@ import {
   type ClaimPlan,
   type ClaimReport,
   type ClaimSuccess,
+  type ExportDestination,
 } from '../claim-report'
 import { forEachConcurrent } from '../concurrency'
 import {
@@ -24,6 +25,7 @@ const CLAIM_CONCURRENCY = 5
 type PendingConfirmation = {
   plan: ClaimPlan<Product>
   gift: boolean
+  destination: ExportDestination
   resolve: (confirmed: boolean) => void
 }
 
@@ -62,24 +64,30 @@ const claimProducts = async (
   return { successes, failures, updated }
 }
 
+const terminateExport = (text: string): string => (text ? `${text}\n` : '')
+
 const exportASF = (products: Product[]): string =>
-  products
-    .filter(
-      (product) =>
-        !product.is_gift &&
-        hasRedeemedKeyValue(product.redeemed_key_val) &&
-        product.key_type === 'steam'
-    )
-    .map(
-      (product) => `${product.human_name}\t${serializeRedeemedKeyValue(product.redeemed_key_val)}`
-    )
-    .join('\n')
+  terminateExport(
+    products
+      .filter(
+        (product) =>
+          !product.is_gift &&
+          hasRedeemedKeyValue(product.redeemed_key_val) &&
+          product.key_type === 'steam'
+      )
+      .map(
+        (product) => `${product.human_name}\t${serializeRedeemedKeyValue(product.redeemed_key_val)}`
+      )
+      .join('\n')
+  )
 
 const exportKeys = (products: Product[]): string =>
-  products
-    .filter((product) => !product.is_gift && hasRedeemedKeyValue(product.redeemed_key_val))
-    .map((product) => serializeRedeemedKeyValue(product.redeemed_key_val))
-    .join('\n')
+  terminateExport(
+    products
+      .filter((product) => !product.is_gift && hasRedeemedKeyValue(product.redeemed_key_val))
+      .map((product) => serializeRedeemedKeyValue(product.redeemed_key_val))
+      .join('\n')
+  )
 
 const escapeCsvField = (value: string, delimiter: string): string => {
   const needsQuotes =
@@ -116,17 +124,72 @@ const exportCSV = (products: Product[], delimiter: string): string => {
     return product[name as keyof Product]
   }
 
-  return [
-    header.map((name) => escapeCsvField(name, delimiter)).join(delimiter),
-    ...products.map((product) =>
-      header
-        .map((name) => escapeCsvField(serializeField(getCsvValue(product, name)), delimiter))
-        .join(delimiter)
-    ),
-  ].join('\r\n')
+  return terminateExport(
+    [
+      header.map((name) => escapeCsvField(name, delimiter)).join(delimiter),
+      ...products.map((product) =>
+        header
+          .map((name) => escapeCsvField(serializeField(getCsvValue(product, name)), delimiter))
+          .join(delimiter)
+      ),
+    ].join('\n')
+  )
 }
 
 type ExportType = 'asf' | 'keys' | 'csv'
+
+const padTimestampPart = (value: number): string => String(value).padStart(2, '0')
+
+const formatLocalTimestamp = (date: Date): string =>
+  [
+    date.getFullYear(),
+    padTimestampPart(date.getMonth() + 1),
+    padTimestampPart(date.getDate()),
+  ].join('') +
+  '-' +
+  [
+    padTimestampPart(date.getHours()),
+    padTimestampPart(date.getMinutes()),
+    padTimestampPart(date.getSeconds()),
+  ].join('')
+
+const getExportFilename = (type: ExportType, date = new Date()): string => {
+  const timestamp = formatLocalTimestamp(date)
+
+  if (type === 'asf') return `humble-bundle-asf-${timestamp}.keys`
+  if (type === 'keys') return `humble-bundle-keys-${timestamp}.txt`
+  return `humble-bundle-export-${timestamp}.csv`
+}
+
+const downloadExport = (text: string, filename: string, type: ExportType): boolean => {
+  let url: string | null = null
+
+  try {
+    const mimeType = type === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8'
+    url = URL.createObjectURL(new Blob([text], { type: mimeType }))
+
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.style.display = 'none'
+    document.body.append(link)
+
+    try {
+      link.click()
+    } finally {
+      link.remove()
+    }
+
+    const objectUrl = url
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+    url = null
+    return true
+  } catch (error) {
+    if (url) URL.revokeObjectURL(url)
+    showErrorToast(error, 'Failed to start download')
+    return false
+  }
+}
 
 const getEmptyExportMessage = (type: ExportType, products: Product[]): string => {
   if (!products.length) return 'Empty export: no rows in table'
@@ -140,7 +203,10 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
   const [exportType, setExportType] = createSignal<ExportType>('csv')
   const [claim, setClaim] = createSignal(false)
   const [claimType, setClaimType] = createSignal('key')
-  const [exporting, setExporting] = createSignal(false)
+  const [exportingDestination, setExportingDestination] = createSignal<ExportDestination | null>(
+    null
+  )
+  const exporting = (): boolean => exportingDestination() !== null
   const [bulkRevealProcessing, setBulkRevealProcessing] = createSignal(false)
   const [bulkRevealProgress, setBulkRevealProgress] = createSignal(0)
   const [separator, setSeparator] = createSignal(',')
@@ -167,10 +233,14 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
     pending.resolve(true)
   }
 
-  const confirmBulkReveal = (plan: ClaimPlan<Product>, gift: boolean): Promise<boolean> => {
+  const confirmBulkReveal = (
+    plan: ClaimPlan<Product>,
+    gift: boolean,
+    destination: ExportDestination
+  ): Promise<boolean> => {
     setBulkRevealProcessing(false)
     setBulkRevealProgress(0)
-    return new Promise((resolve) => setPendingConfirmation({ plan, gift, resolve }))
+    return new Promise((resolve) => setPendingConfirmation({ plan, gift, destination, resolve }))
   }
 
   onCleanup(() => pendingConfirmation()?.resolve(false))
@@ -202,11 +272,13 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
     }
   }
 
-  const exportToClipboard = async (): Promise<void> => {
+  const runExport = async (destination: ExportDestination): Promise<void> => {
     const table = dt()
     if (!table) return
 
-    setExporting(true)
+    const type = exportType()
+    const delimiter = separator() || ','
+    setExportingDestination(destination)
 
     try {
       const toExport = table.rows({ search: 'applied' }).data().toArray() as Product[]
@@ -218,7 +290,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
 
       if (claimable.length) {
         const plan = createClaimPlan(claimable)
-        const confirmed = await confirmBulkReveal(plan, claimAsGift)
+        const confirmed = await confirmBulkReveal(plan, claimAsGift, destination)
         if (!confirmed) return
 
         const { successes, failures, updated } = await claimProducts(
@@ -240,61 +312,60 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           failures,
           typeCounts: plan.typeCounts,
           keylessCount: plan.keylessCount,
-          exportCopied: false,
+          exportDestination: destination,
+          exportSucceeded: false,
           exportEmpty: false,
+          exportFilename: null,
         }
       }
 
-      const delimiter = separator() || ','
       const text =
-        exportType() === 'asf'
+        type === 'asf'
           ? exportASF(toExport)
-          : exportType() === 'keys'
+          : type === 'keys'
             ? exportKeys(toExport)
             : exportCSV(toExport, delimiter)
       if (!text) {
-        showFlashToast(getEmptyExportMessage(exportType(), toExport), 'warning')
+        showFlashToast(getEmptyExportMessage(type, toExport), 'warning')
 
         if (report) {
           setPendingConfirmation(null)
-          setClaimReport({ ...report, exportCopied: false, exportEmpty: true })
+          setClaimReport({ ...report, exportEmpty: true })
         }
         return
       }
 
-      const exportCopied = copyToClipboard(text)
+      let exportSucceeded: boolean
+      let exportFilename: string | null = null
+
+      if (destination === 'clipboard') {
+        exportSucceeded = copyToClipboard(text)
+      } else {
+        exportFilename = getExportFilename(type)
+        exportSucceeded = downloadExport(text, exportFilename, type)
+      }
 
       if (report) {
         setPendingConfirmation(null)
-        setClaimReport({ ...report, exportCopied })
-      } else if (exportCopied) {
-        showFlashToast('Exported to clipboard')
+        setClaimReport({ ...report, exportSucceeded, exportFilename })
+      } else if (exportSucceeded) {
+        showFlashToast(
+          destination === 'clipboard'
+            ? 'Export copied to clipboard'
+            : `Download started: ${exportFilename}`
+        )
       }
     } catch (error) {
       showErrorToast(error, 'Export failed')
     } finally {
       setPendingConfirmation(null)
       setBulkRevealProcessing(false)
-      setExporting(false)
+      setExportingDestination(null)
     }
   }
 
   return (
     <>
-      <div class={styles.actions}>
-        <label for="separator">
-          CSV Separator&nbsp;
-          <input
-            type="text"
-            name="separator"
-            id="separator"
-            value=","
-            onInput={(event) => setSeparator(event.target.value)}
-            style={{ width: '5ch', 'text-align': 'center' }}
-            required
-          />
-        </label>
-      </div>
       <div class={styles.actions}>
         <label for="claim" class={styles.checkbox_label}>
           <input
@@ -335,22 +406,53 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           id="export"
           class={styles.select}
           value={exportType()}
+          aria-label="Export format"
           onChange={(event) => setExportType(event.currentTarget.value as ExportType)}
         >
           <option value="asf">ASF</option>
           <option value="keys">Keys</option>
           <option value="csv">CSV</option>
         </select>
+        <Show when={exportType() === 'csv'}>
+          <label for="separator" class={styles.export_separator}>
+            Separator&nbsp;
+            <input
+              type="text"
+              name="separator"
+              id="separator"
+              value={separator()}
+              onInput={(event) => setSeparator(event.currentTarget.value)}
+              style={{ width: '5ch', 'text-align': 'center' }}
+              required
+            />
+          </label>
+        </Show>
         <button
           type="button"
           class="primary-button"
-          onClick={exportToClipboard}
+          onClick={() => void runExport('clipboard')}
           disabled={!dt() || !exportType() || exporting()}
         >
-          {exporting() && !pendingConfirmation() && !bulkRevealProcessing() ? (
-            <i class="hb hb-spin hb-spinner"></i>
+          {exportingDestination() === 'clipboard' &&
+          !pendingConfirmation() &&
+          !bulkRevealProcessing() ? (
+            <i class="hb hb-spin hb-spinner" aria-hidden="true"></i>
           ) : (
-            'Export'
+            'Copy'
+          )}
+        </button>
+        <button
+          type="button"
+          class={`primary-button ${styles.export_secondary_button}`}
+          onClick={() => void runExport('download')}
+          disabled={!dt() || !exportType() || exporting()}
+        >
+          {exportingDestination() === 'download' &&
+          !pendingConfirmation() &&
+          !bulkRevealProcessing() ? (
+            <i class="hb hb-spin hb-spinner" aria-hidden="true"></i>
+          ) : (
+            'Download'
           )}
         </button>
       </div>
@@ -360,6 +462,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           <BulkRevealConfirmation
             plan={pending.plan}
             gift={pending.gift}
+            destination={pending.destination}
             processing={bulkRevealProcessing}
             progress={bulkRevealProgress}
             onCancel={cancelConfirmation}
