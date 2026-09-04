@@ -137,6 +137,18 @@ const exportCSV = (products: Product[], delimiter: string): string => {
 }
 
 type ExportType = 'asf' | 'keys' | 'csv'
+type CsvDelimiterPreset = 'comma' | 'tab' | 'semicolon' | 'pipe' | 'custom'
+
+const getCsvDelimiter = (preset: CsvDelimiterPreset, customDelimiter: string): string => {
+  if (preset === 'comma') return ','
+  if (preset === 'tab') return '\t'
+  if (preset === 'semicolon') return ';'
+  if (preset === 'pipe') return '|'
+  return customDelimiter
+}
+
+const isValidCsvDelimiter = (delimiter: string): boolean =>
+  delimiter.length > 0 && !/["\r\n]/.test(delimiter)
 
 const padTimestampPart = (value: number): string => String(value).padStart(2, '0')
 
@@ -153,19 +165,34 @@ const formatLocalTimestamp = (date: Date): string =>
     padTimestampPart(date.getSeconds()),
   ].join('')
 
-const getExportFilename = (type: ExportType, date = new Date()): string => {
+const getExportFilename = (type: ExportType, delimiter: string, date = new Date()): string => {
   const timestamp = formatLocalTimestamp(date)
 
   if (type === 'asf') return `humble-bundle-asf-${timestamp}.keys`
   if (type === 'keys') return `humble-bundle-keys-${timestamp}.txt`
-  return `humble-bundle-export-${timestamp}.csv`
+
+  const extension =
+    delimiter === '\t' ? 'tsv' : delimiter === ',' || delimiter === ';' ? 'csv' : 'txt'
+  return `humble-bundle-export-${timestamp}.${extension}`
 }
 
-const downloadExport = (text: string, filename: string, type: ExportType): boolean => {
+const getExportMimeType = (type: ExportType, delimiter: string): string => {
+  if (type !== 'csv') return 'text/plain;charset=utf-8'
+  if (delimiter === '\t') return 'text/tab-separated-values;charset=utf-8'
+  if (delimiter === ',' || delimiter === ';') return 'text/csv;charset=utf-8'
+  return 'text/plain;charset=utf-8'
+}
+
+const downloadExport = (
+  text: string,
+  filename: string,
+  type: ExportType,
+  delimiter: string
+): boolean => {
   let url: string | null = null
 
   try {
-    const mimeType = type === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8'
+    const mimeType = getExportMimeType(type, delimiter)
     url = URL.createObjectURL(new Blob([text], { type: mimeType }))
 
     const link = document.createElement('a')
@@ -209,11 +236,15 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
   const exporting = (): boolean => exportingDestination() !== null
   const [bulkRevealProcessing, setBulkRevealProcessing] = createSignal(false)
   const [bulkRevealProgress, setBulkRevealProgress] = createSignal(0)
-  const [separator, setSeparator] = createSignal(',')
+  const [csvDelimiterPreset, setCsvDelimiterPreset] = createSignal<CsvDelimiterPreset>('comma')
+  const [customCsvDelimiter, setCustomCsvDelimiter] = createSignal('')
   const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(
     null
   )
   const [claimReport, setClaimReport] = createSignal<ClaimReport<Product> | null>(null)
+  const csvDelimiter = (): string => getCsvDelimiter(csvDelimiterPreset(), customCsvDelimiter())
+  const hasValidDelimiter = (): boolean =>
+    exportType() !== 'csv' || isValidCsvDelimiter(csvDelimiter())
 
   const cancelConfirmation = (): void => {
     if (bulkRevealProcessing()) return
@@ -277,7 +308,16 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
     if (!table) return
 
     const type = exportType()
-    const delimiter = separator() || ','
+    const delimiter = csvDelimiter()
+    if (type === 'csv' && !isValidCsvDelimiter(delimiter)) {
+      showFlashToast(
+        delimiter
+          ? 'CSV delimiters cannot contain double quotes or line breaks'
+          : 'Choose a CSV delimiter or enter a custom delimiter',
+        'warning'
+      )
+      return
+    }
     setExportingDestination(destination)
 
     try {
@@ -341,8 +381,8 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
       if (destination === 'clipboard') {
         exportSucceeded = copyToClipboard(text)
       } else {
-        exportFilename = getExportFilename(type)
-        exportSucceeded = downloadExport(text, exportFilename, type)
+        exportFilename = getExportFilename(type, delimiter)
+        exportSucceeded = downloadExport(text, exportFilename, type, delimiter)
       }
 
       if (report) {
@@ -414,24 +454,49 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           <option value="csv">CSV</option>
         </select>
         <Show when={exportType() === 'csv'}>
-          <label for="separator" class={styles.export_separator}>
-            Separator&nbsp;
-            <input
-              type="text"
-              name="separator"
-              id="separator"
-              value={separator()}
-              onInput={(event) => setSeparator(event.currentTarget.value)}
-              style={{ width: '5ch', 'text-align': 'center' }}
-              required
-            />
-          </label>
+          <div class={styles.export_delimiter}>
+            <label for="csvDelimiter">Delimiter</label>
+            <select
+              name="csvDelimiter"
+              id="csvDelimiter"
+              class={`${styles.select} ${styles.export_delimiter_select}`}
+              value={csvDelimiterPreset()}
+              onChange={(event) =>
+                setCsvDelimiterPreset(event.currentTarget.value as CsvDelimiterPreset)
+              }
+            >
+              <option value="comma">Comma</option>
+              <option value="tab">Tab</option>
+              <option value="semicolon">Semicolon</option>
+              <option value="pipe">Pipe</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <Show when={csvDelimiterPreset() === 'custom'}>
+              <input
+                type="text"
+                name="customCsvDelimiter"
+                id="customCsvDelimiter"
+                class={styles.export_custom_delimiter}
+                value={customCsvDelimiter()}
+                onInput={(event) => setCustomCsvDelimiter(event.currentTarget.value)}
+                on:keydown={(event) => event.stopPropagation()}
+                on:keypress={(event) => event.stopPropagation()}
+                on:keyup={(event) => event.stopPropagation()}
+                aria-label="Custom CSV delimiter"
+                aria-required="true"
+                aria-invalid={!isValidCsvDelimiter(customCsvDelimiter())}
+                placeholder="Custom"
+                title="Enter a delimiter without double quotes or line breaks"
+                required
+              />
+            </Show>
+          </div>
         </Show>
         <button
           type="button"
           class="primary-button"
           onClick={() => void runExport('clipboard')}
-          disabled={!dt() || !exportType() || exporting()}
+          disabled={!dt() || !exportType() || !hasValidDelimiter() || exporting()}
         >
           {exportingDestination() === 'clipboard' &&
           !pendingConfirmation() &&
@@ -445,7 +510,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           type="button"
           class={`primary-button ${styles.export_secondary_button}`}
           onClick={() => void runExport('download')}
-          disabled={!dt() || !exportType() || exporting()}
+          disabled={!dt() || !exportType() || !hasValidDelimiter() || exporting()}
         >
           {exportingDestination() === 'download' &&
           !pendingConfirmation() &&

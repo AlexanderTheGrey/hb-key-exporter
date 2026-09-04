@@ -56,10 +56,25 @@ tr.expired {
   transform: translateY(0.25px);
 }
 
-.export_separator {
+.export_delimiter {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   white-space: nowrap;
+}
+
+.export_delimiter_select {
+  box-sizing: border-box;
+  width: 9.5em;
+  min-width: 0;
+}
+
+.export_custom_delimiter {
+  box-sizing: border-box;
+  width: 9ch;
+  min-width: 0;
+  padding: 4px 6px;
+  text-align: center;
 }
 
 .btn {
@@ -78,6 +93,13 @@ tr.expired {
 .export_secondary_button:not(:disabled):hover,
 .export_secondary_button:not(:disabled):focus-visible {
   background: #e2e5e9;
+}
+
+:global(.primary-button).export_secondary_button:disabled {
+  background: #e9e9ed;
+  color: #8f8f9d;
+  border-color: #c7c7cc;
+  cursor: not-allowed;
 }
 
 .row_actions {
