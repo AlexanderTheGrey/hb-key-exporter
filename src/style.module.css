@@ -136,6 +136,23 @@ tr.expired {
 
 .page_jump + :global(.dt-paging) {
   flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.page_jump
+  + :global(.dt-paging)
+  :global(.dt-paging-button:not(.first):not(.previous):not(.next):not(.last)),
+.page_jump + :global(.dt-paging) :global(.ellipsis) {
+  box-sizing: border-box;
+  width: var(
+    --hb-paging-number-slot-width,
+    calc(var(--hb-paging-number-content-width, 1ch) + 2em + 2px)
+  );
+}
+
+.page_jump + :global(.dt-paging) :global(.ellipsis) {
+  display: inline-block;
+  margin-left: var(--hb-paging-number-slot-margin-left, 0);
 }
 
 .page_jump_input {

@@ -567,15 +567,51 @@ export function Table({
     pageJump.className = styles.page_jump
     pageJump.append('Jump to', pageJumpInput, 'of', pageJumpTotal)
 
+    let measuredPagingNumberCharacters = 0
+
     const syncPageJump = (): void => {
       const info = dt.page.info()
       const hasPages = info.pages > 0
 
       pageJumpInput.disabled = !hasPages
       pageJumpInput.value = hasPages ? String(info.page + 1) : ''
-      pageJumpInput.maxLength = Math.max(1, String(info.pages).length)
-      pageJumpInput.style.width = `${Math.max(4, String(info.pages).length + 2)}ch`
+      const pageDigits = Math.max(1, String(info.pages).length)
+      const pageNumberCharacters = pageDigits + Math.floor((pageDigits - 1) / 3)
+
+      pageJumpInput.maxLength = pageDigits
+      pageJumpInput.style.width = `${Math.max(4, pageDigits + 2)}ch`
       pageJumpTotal.textContent = String(info.pages)
+
+      const pageControls = pageJump.parentElement
+      if (!pageControls) return
+
+      pageControls.style.setProperty(
+        '--hb-paging-number-content-width',
+        `${pageNumberCharacters}ch`
+      )
+
+      if (pageNumberCharacters === measuredPagingNumberCharacters) return
+
+      // DataTables renders page numbers as buttons and ellipses as spans, which can resolve
+      // relative widths differently. Measure a real number button so every slot occupies the same
+      // space and the surrounding navigation controls stay fixed while paging.
+      pageControls.style.removeProperty('--hb-paging-number-slot-width')
+      pageControls.style.removeProperty('--hb-paging-number-slot-margin-left')
+
+      const pageNumberButton = pageControls.querySelector<HTMLElement>(
+        '.dt-paging .dt-paging-button:not(.first):not(.previous):not(.next):not(.last)'
+      )
+      if (!pageNumberButton) return
+
+      const width = pageNumberButton.getBoundingClientRect().width
+      if (width <= 0) return
+
+      pageControls.style.setProperty('--hb-paging-number-slot-width', `${width}px`)
+      pageControls.style.setProperty(
+        '--hb-paging-number-slot-margin-left',
+        window.getComputedStyle(pageNumberButton).marginLeft
+      )
+      measuredPagingNumberCharacters = pageNumberCharacters
     }
 
     const jumpToPage = (): void => {
