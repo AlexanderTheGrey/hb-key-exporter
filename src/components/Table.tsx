@@ -33,6 +33,8 @@ type PendingKeylessRedemption = {
   resolve: (confirmed: boolean) => void
 }
 
+const PAGING_POSITION_TOLERANCE = 0.5
+
 export function Table({
   products,
   steamId,
@@ -1068,36 +1070,100 @@ export function Table({
     }
 
     const container = dt.table().container() as HTMLElement
+    const tableLayoutCell = container.querySelector<HTMLElement>(
+      '.dt-layout-table > .dt-layout-cell'
+    )
 
     let pagingTop: number | null = null
+    let pagingRestoreFrame: number | null = null
+
+    const clearPagingHeightReservation = (): void => {
+      tableLayoutCell?.style.removeProperty('min-height')
+    }
+
+    const cancelPagingRestore = (): void => {
+      if (pagingRestoreFrame == null) return
+
+      cancelAnimationFrame(pagingRestoreFrame)
+      pagingRestoreFrame = null
+    }
+
+    const resetPagingPositionStability = (): void => {
+      pagingTop = null
+      cancelPagingRestore()
+      clearPagingHeightReservation()
+    }
 
     const getPaging = () => container.querySelector<HTMLElement>('.dt-paging')
 
-    const rememberPagingTop = () => {
-      const rect = getPaging()?.getBoundingClientRect()
+    const rememberPagingTop = (): void => {
+      cancelPagingRestore()
 
+      const rect = getPaging()?.getBoundingClientRect()
       pagingTop = rect && rect.bottom > 0 && rect.top < window.innerHeight ? rect.top : null
+
+      // Each page transition starts from the table's natural height. Any extra height retained from
+      // the previous transition is only a fallback for a scroll-boundary shortfall.
+      clearPagingHeightReservation()
     }
 
-    const restorePagingTop = () => {
+    const clearPagingHeightReservationForNonPagingDraw = (): void => {
+      if (pagingTop != null) return
+
+      cancelPagingRestore()
+      clearPagingHeightReservation()
+    }
+
+    const restorePagingTop = (): void => {
       if (pagingTop == null) return
 
       const previousTop = pagingTop
       pagingTop = null
 
-      requestAnimationFrame(() => {
-        const nextTop = getPaging()?.getBoundingClientRect().top
-        if (nextTop != null) {
-          window.scrollBy({ top: nextTop - previousTop, behavior: 'auto' })
+      cancelPagingRestore()
+      pagingRestoreFrame = requestAnimationFrame(() => {
+        pagingRestoreFrame = null
+
+        const paging = getPaging()
+        if (!paging) return
+
+        const nextTop = paging.getBoundingClientRect().top
+        const scrollDelta = nextTop - previousTop
+
+        if (Math.abs(scrollDelta) > PAGING_POSITION_TOLERANCE) {
+          window.scrollBy({ top: scrollDelta, behavior: 'auto' })
         }
+
+        if (!tableLayoutCell) return
+
+        // Scrolling can be clamped at the top of the document when a shorter page replaces a
+        // taller one. Reserve only that uncompensated remainder below the table so the paging
+        // controls stay at the same viewport position without constraining any row content.
+        const residual = previousTop - paging.getBoundingClientRect().top
+        if (residual <= PAGING_POSITION_TOLERANCE) return
+
+        const naturalHeight = tableLayoutCell.getBoundingClientRect().height
+        tableLayoutCell.style.minHeight = `${naturalHeight + residual}px`
+
+        // Account for box-model/subpixel differences so the fallback remains exact rather than
+        // accumulating a small error across repeated transitions.
+        const correction = previousTop - paging.getBoundingClientRect().top
+        if (Math.abs(correction) <= PAGING_POSITION_TOLERANCE) return
+
+        const currentMinHeight = Number.parseFloat(tableLayoutCell.style.minHeight)
+        if (!Number.isFinite(currentMinHeight)) return
+
+        tableLayoutCell.style.minHeight = `${Math.max(naturalHeight, currentMinHeight + correction)}px`
       })
     }
 
     syncPageJump()
     dt.on('page', rememberPagingTop)
+    dt.on('draw', clearPagingHeightReservationForNonPagingDraw)
     dt.on('draw', restorePagingTop)
     dt.on('draw', syncPageJump)
     dt.on('draw', closeRegionPopover)
+    window.addEventListener('resize', resetPagingPositionStability)
 
     // Warnings when selecting certain column filters
 
@@ -1192,10 +1258,13 @@ export function Table({
 
     onCleanup(() => {
       dt.off('page', rememberPagingTop)
+      dt.off('draw', clearPagingHeightReservationForNonPagingDraw)
       dt.off('draw', restorePagingTop)
       dt.off('draw', syncPageJump)
       dt.off('draw', closeRegionPopover)
 
+      cancelPagingRestore()
+      window.removeEventListener('resize', resetPagingPositionStability)
       window.removeEventListener('resize', closeRegionPopover)
       window.removeEventListener('scroll', closeRegionPopover, true)
       regionPopover.removeEventListener('mouseenter', cancelRegionPopoverHide)
