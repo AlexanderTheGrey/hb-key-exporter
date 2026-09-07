@@ -1,4 +1,4 @@
-import { For, onCleanup, onMount, Show, type Accessor } from 'solid-js'
+import { For, Show, type Accessor } from 'solid-js'
 import {
   formatClaimLog,
   getClaimTypeLabel,
@@ -9,6 +9,7 @@ import {
   type ClaimReport,
   type ExportDestination,
 } from '../claim-report'
+import { useModalBehavior } from '../modal'
 import { copyToClipboard, showFlashToast, type Product } from '../util'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
@@ -44,18 +45,6 @@ const ClaimType = ({ product }: { product: Product }) => {
   )
 }
 
-const useEscapeKey = (onEscape: () => void, disabled?: Accessor<boolean>): void => {
-  const handleKeyDown = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape' || disabled?.()) return
-
-    event.preventDefault()
-    onEscape()
-  }
-
-  onMount(() => document.addEventListener('keydown', handleKeyDown))
-  onCleanup(() => document.removeEventListener('keydown', handleKeyDown))
-}
-
 export function KeylessRedemptionConfirmation({
   product,
   gift,
@@ -78,8 +67,12 @@ export function KeylessRedemptionConfirmation({
         'Continuing will redeem this item immediately to the third-party account linked to your',
         'Humble Bundle account. No transferable key will be shown.',
       ].join(' ')
-
-  useEscapeKey(onCancel, processing)
+  let dialogRef: HTMLElement | undefined
+  const { handleKeyDown, stopPropagation } = useModalBehavior({
+    dialog: () => dialogRef,
+    onEscape: onCancel,
+    escapeDisabled: processing,
+  })
 
   return (
     <div
@@ -88,12 +81,16 @@ export function KeylessRedemptionConfirmation({
       onMouseDown={(event) => event.target === event.currentTarget && !processing() && onCancel()}
     >
       <section
+        ref={dialogRef}
         class={styles.modal}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-keyless-confirm-title"
         aria-busy={processing()}
         tabindex="-1"
+        on:keydown={handleKeyDown}
+        on:keypress={stopPropagation}
+        on:keyup={stopPropagation}
       >
         <header class={styles.modal_header}>
           <div>
@@ -195,7 +192,12 @@ export function BulkRevealConfirmation({
         'your Humble Bundle account; they will not produce transferable keys.',
       ].join(' ')
 
-  useEscapeKey(onCancel, processing)
+  let dialogRef: HTMLElement | undefined
+  const { handleKeyDown, stopPropagation } = useModalBehavior({
+    dialog: () => dialogRef,
+    onEscape: onCancel,
+    escapeDisabled: processing,
+  })
 
   return (
     <div
@@ -204,12 +206,16 @@ export function BulkRevealConfirmation({
       onMouseDown={(event) => event.target === event.currentTarget && !processing() && onCancel()}
     >
       <section
+        ref={dialogRef}
         class={styles.modal}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-confirm-title"
         aria-busy={processing()}
         tabindex="-1"
+        on:keydown={handleKeyDown}
+        on:keypress={stopPropagation}
+        on:keyup={stopPropagation}
       >
         <header class={styles.modal_header}>
           <div>
@@ -363,8 +369,11 @@ export function BulkRevealResults({
   const groups = groupClaimResults(report)
   const requested = report.successes.length + report.failures.length
   let resultGroupsRef!: HTMLDivElement
-
-  useEscapeKey(onClose)
+  let dialogRef: HTMLElement | undefined
+  const { handleKeyDown, stopPropagation } = useModalBehavior({
+    dialog: () => dialogRef,
+    onEscape: onClose,
+  })
 
   const setAllBundlesOpen = (open: boolean): void => {
     for (const bundle of resultGroupsRef.querySelectorAll<HTMLDetailsElement>('details')) {
@@ -381,11 +390,15 @@ export function BulkRevealResults({
   return (
     <div class={styles.modal_backdrop} role="presentation">
       <section
+        ref={dialogRef}
         class={`${styles.modal} ${styles.modal_wide}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-results-title"
         tabindex="-1"
+        on:keydown={handleKeyDown}
+        on:keypress={stopPropagation}
+        on:keyup={stopPropagation}
       >
         <header class={styles.modal_header}>
           <div>

@@ -102,6 +102,150 @@ tr.expired {
   cursor: not-allowed;
 }
 
+.csv_settings_intro {
+  margin: 0 0 18px;
+  color: #4e5661;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.csv_settings_section_header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.csv_settings_section_header h3 {
+  margin: 0;
+  color: #353b44;
+  font-size: 14px;
+}
+
+.csv_settings_count {
+  display: block;
+  margin-top: 3px;
+  color: #69717d;
+  font-size: 12px;
+}
+
+.csv_settings_actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.csv_settings_actions button {
+  padding: 4px 8px;
+  background: #fff;
+  color: #3d434c;
+  border: 1px solid #b8bec7;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.csv_settings_actions button:hover,
+.csv_settings_actions button:focus-visible {
+  background: #eef0f3;
+}
+
+.csv_column_grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.csv_column_option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  background: #fafbfc;
+  border: 1px solid #dfe2e6;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.csv_column_option:hover,
+.csv_column_option:focus-within {
+  background: #f3f5f7;
+  border-color: #c8cdd4;
+}
+
+.csv_column_option input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+}
+
+.csv_column_option span {
+  min-width: 0;
+}
+
+.csv_column_option strong,
+.csv_column_option small {
+  display: block;
+}
+
+.csv_column_option strong {
+  color: #353b44;
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+
+.csv_column_option small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #737b86;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.csv_date_settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding-top: 16px;
+  margin-top: 18px;
+  border-top: 1px solid #e1e4e8;
+}
+
+.csv_date_settings > div {
+  min-width: 0;
+}
+
+.csv_date_settings label {
+  color: #353b44;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.csv_date_settings p {
+  margin: 4px 0 0;
+  color: #69717d;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.csv_date_settings select {
+  flex: 0 0 auto;
+  width: 14em;
+  max-width: 100%;
+}
+
+.csv_settings_apply:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .row_actions {
   display: flex;
   gap: 2px;
@@ -669,6 +813,24 @@ tr.expired {
 }
 
 @media (max-width: 600px) {
+  .csv_settings_section_header,
+  .csv_date_settings {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .csv_settings_actions {
+    justify-content: flex-start;
+  }
+
+  .csv_column_grid {
+    grid-template-columns: 1fr;
+  }
+
+  .csv_date_settings select {
+    width: 100%;
+  }
+
   .modal_backdrop {
     align-items: flex-end;
     padding: 10px;

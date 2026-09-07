@@ -15,8 +15,16 @@ import {
   type WithSearchBuilder,
 } from '../table-filter'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
+import {
+  exportCSV,
+  loadCsvExportPreferences,
+  resolveCsvColumnIds,
+  saveCsvExportPreferences,
+  type CsvExportPreferences,
+} from '../csv-export'
 import { copyToClipboard, redeem, showErrorToast, showFlashToast, type Product } from '../util'
 import { BulkRevealConfirmation, BulkRevealResults } from './BulkRevealDialogs'
+import { CsvExportSettingsDialog } from './CsvExportSettingsDialog'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
 
@@ -88,53 +96,6 @@ const exportKeys = (products: Product[]): string =>
       .map((product) => serializeRedeemedKeyValue(product.redeemed_key_val))
       .join('\n')
   )
-
-const escapeCsvField = (value: string, delimiter: string): string => {
-  const needsQuotes =
-    value.includes('"') ||
-    value.includes('\n') ||
-    value.includes('\r') ||
-    (delimiter ? value.includes(delimiter) : false) ||
-    value.trim() !== value
-
-  return needsQuotes ? `"${value.replace(/"/g, '""')}"` : value
-}
-
-const serializeField = (value: unknown): string => {
-  if (value == null) return ''
-  if (typeof value === 'object') return JSON.stringify(value) ?? ''
-  return String(value)
-}
-
-const exportCSV = (products: Product[], delimiter: string): string => {
-  if (!products.length) return ''
-
-  const header = Object.keys(products[0]).flatMap((name) => {
-    if (name === 'redeemed_date') return ['redeemed_date_label', 'redeemed_date_iso']
-    if (name === 'exclusive_countries') return ['Exclusive Countries']
-    if (name === 'disallowed_countries') return ['Disallowed Countries']
-    return [name]
-  })
-
-  const getCsvValue = (product: Product, name: string): unknown => {
-    if (name === 'redeemed_date_label') return product.redeemed_date?.label ?? ''
-    if (name === 'redeemed_date_iso') return product.redeemed_date?.iso ?? ''
-    if (name === 'Exclusive Countries') return product.exclusive_countries.join(';')
-    if (name === 'Disallowed Countries') return product.disallowed_countries.join(';')
-    return product[name as keyof Product]
-  }
-
-  return terminateExport(
-    [
-      header.map((name) => escapeCsvField(name, delimiter)).join(delimiter),
-      ...products.map((product) =>
-        header
-          .map((name) => escapeCsvField(serializeField(getCsvValue(product, name)), delimiter))
-          .join(delimiter)
-      ),
-    ].join('\n')
-  )
-}
 
 type ExportType = 'asf' | 'keys' | 'csv'
 type CsvDelimiterPreset = 'comma' | 'tab' | 'semicolon' | 'pipe' | 'custom'
@@ -238,6 +199,10 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
   const [bulkRevealProgress, setBulkRevealProgress] = createSignal(0)
   const [csvDelimiterPreset, setCsvDelimiterPreset] = createSignal<CsvDelimiterPreset>('comma')
   const [customCsvDelimiter, setCustomCsvDelimiter] = createSignal('')
+  const [csvExportPreferences, setCsvExportPreferences] = createSignal<CsvExportPreferences>(
+    loadCsvExportPreferences()
+  )
+  const [csvSettingsOpen, setCsvSettingsOpen] = createSignal(false)
   const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(
     null
   )
@@ -245,6 +210,22 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
   const csvDelimiter = (): string => getCsvDelimiter(csvDelimiterPreset(), customCsvDelimiter())
   const hasValidDelimiter = (): boolean =>
     exportType() !== 'csv' || isValidCsvDelimiter(csvDelimiter())
+  const hasSelectedCsvColumns = (): boolean =>
+    exportType() !== 'csv' || resolveCsvColumnIds(csvExportPreferences()).length > 0
+
+  const closeCsvSettings = (): void => {
+    setCsvSettingsOpen(false)
+  }
+
+  const applyCsvSettings = (preferences: CsvExportPreferences): void => {
+    setCsvExportPreferences(preferences)
+    try {
+      saveCsvExportPreferences(preferences)
+    } catch (error) {
+      showErrorToast(error, 'Failed to save CSV export settings')
+    }
+    closeCsvSettings()
+  }
 
   const cancelConfirmation = (): void => {
     if (bulkRevealProcessing()) return
@@ -309,6 +290,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
 
     const type = exportType()
     const delimiter = csvDelimiter()
+    const preferences = csvExportPreferences()
     if (type === 'csv' && !isValidCsvDelimiter(delimiter)) {
       showFlashToast(
         delimiter
@@ -364,7 +346,7 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           ? exportASF(toExport)
           : type === 'keys'
             ? exportKeys(toExport)
-            : exportCSV(toExport, delimiter)
+            : exportCSV(toExport, delimiter, preferences)
       if (!text) {
         showFlashToast(getEmptyExportMessage(type, toExport), 'warning')
 
@@ -491,12 +473,28 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
               />
             </Show>
           </div>
+          <button
+            type="button"
+            class={styles.btn}
+            onClick={() => setCsvSettingsOpen(true)}
+            disabled={!dt() || exporting()}
+            aria-haspopup="dialog"
+            title="Choose CSV columns and date formatting"
+          >
+            Columns…
+          </button>
         </Show>
         <button
           type="button"
           class="primary-button"
           onClick={() => void runExport('clipboard')}
-          disabled={!dt() || !exportType() || !hasValidDelimiter() || exporting()}
+          disabled={
+            !dt() ||
+            !exportType() ||
+            !hasValidDelimiter() ||
+            !hasSelectedCsvColumns() ||
+            exporting()
+          }
         >
           {exportingDestination() === 'clipboard' &&
           !pendingConfirmation() &&
@@ -510,7 +508,13 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           type="button"
           class={`primary-button ${styles.export_secondary_button}`}
           onClick={() => void runExport('download')}
-          disabled={!dt() || !exportType() || !hasValidDelimiter() || exporting()}
+          disabled={
+            !dt() ||
+            !exportType() ||
+            !hasValidDelimiter() ||
+            !hasSelectedCsvColumns() ||
+            exporting()
+          }
         >
           {exportingDestination() === 'download' &&
           !pendingConfirmation() &&
@@ -521,6 +525,17 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
           )}
         </button>
       </div>
+
+      <Show when={csvSettingsOpen() && dt()} keyed>
+        {(table) => (
+          <CsvExportSettingsDialog
+            table={table}
+            preferences={csvExportPreferences()}
+            onCancel={closeCsvSettings}
+            onApply={applyCsvSettings}
+          />
+        )}
+      </Show>
 
       <Show when={pendingConfirmation()} keyed>
         {(pending) => (
