@@ -308,6 +308,7 @@ tr.expired {
   border: 1px solid #aaa;
   border-radius: 3px;
   font: inherit;
+  font-variant-numeric: tabular-nums;
   text-align: center;
 }
 

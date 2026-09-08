@@ -555,7 +555,8 @@ export function Table({
       const pageNumberCharacters = pageDigits + Math.floor((pageDigits - 1) / 3)
 
       pageJumpInput.maxLength = pageDigits
-      pageJumpInput.style.width = `${Math.max(4, pageDigits + 2)}ch`
+      // Include the input padding and borders plus a small buffer for fractional-pixel text metrics.
+      pageJumpInput.style.width = `calc(${pageDigits}ch + 1.2em + 4px)`
       pageJumpTotal.textContent = String(info.pages)
 
       const pageControls = pageJump.parentElement
