@@ -1176,6 +1176,9 @@ export function Table({
     dt.on('draw', clearPagingHeightReservationForNonPagingDraw)
     dt.on('draw', restorePagingTop)
     dt.on('draw', syncPageJump)
+    // The table can initialize while the exporter is hidden. Re-measure paging geometry when
+    // DataTables recalculates its layout after the table becomes visible.
+    dt.on('column-sizing', syncPageJump)
     dt.on('draw', closeRegionPopover)
     window.addEventListener('resize', resetPagingPositionStability)
 
@@ -1275,6 +1278,7 @@ export function Table({
       dt.off('draw', clearPagingHeightReservationForNonPagingDraw)
       dt.off('draw', restorePagingTop)
       dt.off('draw', syncPageJump)
+      dt.off('column-sizing', syncPageJump)
       dt.off('draw', closeRegionPopover)
 
       cancelPagingRestore()
