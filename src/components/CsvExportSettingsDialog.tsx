@@ -118,7 +118,7 @@ export function CsvExportSettingsDialog({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <p id="hb_extractor-csv-settings-description" class={styles.csv_settings_intro}>
             Choose which fields to include in CSV exports. Applied settings are remembered across
             page reloads.
@@ -167,7 +167,7 @@ export function CsvExportSettingsDialog({
 
           <div class={styles.csv_date_settings}>
             <div>
-              <label for="csvDateFormat">Date format</label>
+              <label for="csvDateFormat">Date and time format</label>
               <p>
                 Human-readable timestamps use your browser's local time zone ({getBrowserTimeZone()}
                 ). Date-only values remain date-only.

@@ -459,6 +459,7 @@ tr.expired {
 .modal_body {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 20px 22px;
 }
 

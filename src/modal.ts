@@ -11,6 +11,8 @@ const TABBABLE_SELECTOR = [
   '[tabindex]',
 ].join(',')
 
+const MODAL_SCROLL_BODY_SELECTOR = '[data-modal-scroll-body]'
+
 const activeDialogs = new Set<HTMLElement>()
 let modalSessionRestoreTarget: HTMLElement | null = null
 
@@ -45,6 +47,101 @@ const canRestoreFocus = (target: HTMLElement): boolean =>
 
 const isInsideActiveDialog = (target: HTMLElement): boolean =>
   Array.from(activeDialogs).some((dialog) => dialog.contains(target))
+
+const getEventScrollBody = (event: Event): HTMLElement | undefined =>
+  event
+    .composedPath()
+    .find(
+      (target): target is HTMLElement =>
+        target instanceof HTMLElement &&
+        target.matches(MODAL_SCROLL_BODY_SELECTOR) &&
+        isInsideActiveDialog(target)
+    )
+
+const canScrollBody = (scrollBody: HTMLElement, deltaY: number): boolean => {
+  if (deltaY < 0) return scrollBody.scrollTop > 0
+  if (deltaY > 0) {
+    return scrollBody.scrollTop + scrollBody.clientHeight < scrollBody.scrollHeight - 1
+  }
+  return false
+}
+
+const preventBackgroundWheel = (event: WheelEvent): void => {
+  if (event.ctrlKey) return
+
+  const scrollBody = getEventScrollBody(event)
+  if (!scrollBody || !canScrollBody(scrollBody, event.deltaY)) event.preventDefault()
+}
+
+let lastTouchY: number | null = null
+let touchScrollBody: HTMLElement | null = null
+
+const trackTouchStart = (event: TouchEvent): void => {
+  if (event.touches.length !== 1) {
+    lastTouchY = null
+    touchScrollBody = null
+    return
+  }
+
+  lastTouchY = event.touches[0].clientY
+  touchScrollBody = getEventScrollBody(event) ?? null
+}
+
+const preventBackgroundTouchMove = (event: TouchEvent): void => {
+  if (event.touches.length !== 1) {
+    lastTouchY = null
+    touchScrollBody = null
+    return
+  }
+
+  const currentY = event.touches[0].clientY
+  const previousY = lastTouchY
+  lastTouchY = currentY
+
+  if (!touchScrollBody) {
+    event.preventDefault()
+    return
+  }
+
+  if (previousY !== null && !canScrollBody(touchScrollBody, previousY - currentY)) {
+    event.preventDefault()
+  }
+}
+
+const trackTouchEnd = (event: TouchEvent): void => {
+  if (event.touches.length === 1) {
+    lastTouchY = event.touches[0].clientY
+    return
+  }
+
+  lastTouchY = null
+  touchScrollBody = null
+}
+
+const clearTouchTracking = (): void => {
+  lastTouchY = null
+  touchScrollBody = null
+}
+
+const enableBackgroundScrollGuard = (): void => {
+  document.addEventListener('wheel', preventBackgroundWheel, { capture: true, passive: false })
+  document.addEventListener('touchstart', trackTouchStart, { capture: true, passive: true })
+  document.addEventListener('touchmove', preventBackgroundTouchMove, {
+    capture: true,
+    passive: false,
+  })
+  document.addEventListener('touchend', trackTouchEnd, true)
+  document.addEventListener('touchcancel', clearTouchTracking, true)
+}
+
+const disableBackgroundScrollGuard = (): void => {
+  document.removeEventListener('wheel', preventBackgroundWheel, true)
+  document.removeEventListener('touchstart', trackTouchStart, true)
+  document.removeEventListener('touchmove', preventBackgroundTouchMove, true)
+  document.removeEventListener('touchend', trackTouchEnd, true)
+  document.removeEventListener('touchcancel', clearTouchTracking, true)
+  clearTouchTracking()
+}
 
 export const useModalBehavior = ({
   dialog,
@@ -104,11 +201,13 @@ export const useModalBehavior = ({
     mountedDialog = dialog() ?? null
     if (!mountedDialog) return
 
-    if (!activeDialogs.size && !modalSessionRestoreTarget) {
+    const isFirstDialog = !activeDialogs.size
+    if (isFirstDialog && !modalSessionRestoreTarget) {
       modalSessionRestoreTarget = restoreFocusTarget
     }
 
     activeDialogs.add(mountedDialog)
+    if (isFirstDialog) enableBackgroundScrollGuard()
     participatedInModalSession = true
     const currentDialog = mountedDialog
     queueMicrotask(() => focusDialog(currentDialog))
@@ -117,6 +216,7 @@ export const useModalBehavior = ({
   onCleanup(() => {
     if (mountedDialog) {
       activeDialogs.delete(mountedDialog)
+      if (!activeDialogs.size) disableBackgroundScrollGuard()
       mountedDialog = null
     }
 

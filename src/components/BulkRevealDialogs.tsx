@@ -111,7 +111,7 @@ export function KeylessRedemptionConfirmation({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <p class={styles.modal_lead}>
             <strong>{product.human_name}</strong> is marked by Humble for direct redemption.
           </p>
@@ -238,7 +238,7 @@ export function BulkRevealConfirmation({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <p class={styles.modal_lead}>
             The exporter is about to {action} <strong>{count}</strong>{' '}
             {pluralize(count, 'unrevealed item')} across <strong>{plan.bundleCount}</strong>{' '}
@@ -418,7 +418,7 @@ export function BulkRevealResults({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <div class={styles.result_summary} aria-live="polite">
             <div class={styles.result_summary_item}>
               <strong>{requested}</strong>
