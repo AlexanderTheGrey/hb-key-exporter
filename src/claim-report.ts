@@ -152,5 +152,5 @@ export const formatClaimLog = <T extends ClaimProduct>(report: ClaimReport<T>): 
     }
   }
 
-  return lines.join('\n')
+  return `${lines.join('\n')}\n`
 }

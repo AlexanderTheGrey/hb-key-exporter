@@ -9,6 +9,7 @@ import {
   type ExportDestination,
 } from '../claim-report'
 import { forEachConcurrent } from '../concurrency'
+import { downloadTextFile, formatLocalTimestamp } from '../download'
 import {
   hasSearchBuilderCriteria,
   invertSearchBuilderGroup,
@@ -113,21 +114,6 @@ const getCsvDelimiter = (preset: CsvDelimiterPreset, customDelimiter: string): s
 const isValidCsvDelimiter = (delimiter: string): boolean =>
   delimiter.length > 0 && !/["\r\n]/.test(delimiter)
 
-const padTimestampPart = (value: number): string => String(value).padStart(2, '0')
-
-const formatLocalTimestamp = (date: Date): string =>
-  [
-    date.getFullYear(),
-    padTimestampPart(date.getMonth() + 1),
-    padTimestampPart(date.getDate()),
-  ].join('') +
-  '-' +
-  [
-    padTimestampPart(date.getHours()),
-    padTimestampPart(date.getMinutes()),
-    padTimestampPart(date.getSeconds()),
-  ].join('')
-
 const getExportFilename = (type: ExportType, delimiter: string, date = new Date()): string => {
   const timestamp = formatLocalTimestamp(date)
 
@@ -152,30 +138,10 @@ const downloadExport = (
   type: ExportType,
   delimiter: string
 ): boolean => {
-  let url: string | null = null
-
   try {
-    const mimeType = getExportMimeType(type, delimiter)
-    url = URL.createObjectURL(new Blob([text], { type: mimeType }))
-
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    link.style.display = 'none'
-    document.body.append(link)
-
-    try {
-      link.click()
-    } finally {
-      link.remove()
-    }
-
-    const objectUrl = url
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
-    url = null
+    downloadTextFile(text, filename, getExportMimeType(type, delimiter))
     return true
   } catch (error) {
-    if (url) URL.revokeObjectURL(url)
     showErrorToast(error, 'Failed to start download')
     return false
   }

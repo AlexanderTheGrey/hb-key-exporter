@@ -595,6 +595,10 @@ tr.expired {
   border-top: 1px solid #e1e4e8;
 }
 
+.result_footer {
+  flex-wrap: wrap;
+}
+
 .modal_primary_button,
 .modal_secondary_button {
   min-width: 94px;

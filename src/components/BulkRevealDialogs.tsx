@@ -9,13 +9,17 @@ import {
   type ClaimReport,
   type ExportDestination,
 } from '../claim-report'
+import { downloadTextFile, formatLocalTimestamp } from '../download'
 import { useModalBehavior } from '../modal'
-import { copyToClipboard, showFlashToast, type Product } from '../util'
+import { copyToClipboard, showErrorToast, showFlashToast, type Product } from '../util'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
 
 const pluralize = (count: number, singular: string, plural = `${singular}s`): string =>
   count === 1 ? singular : plural
+
+const getRevealLogFilename = (date = new Date()): string =>
+  `humble-bundle-reveal-log-${formatLocalTimestamp(date)}.log`
 
 const claimTypeIconClasses: Record<string, string> = {
   battlenet: 'hb-bnet',
@@ -368,6 +372,7 @@ export function BulkRevealResults({
 }) {
   const groups = groupClaimResults(report)
   const requested = report.successes.length + report.failures.length
+  const log = formatClaimLog(report)
   let resultGroupsRef!: HTMLDivElement
   let dialogRef: HTMLElement | undefined
   const { handleKeyDown, stopPropagation } = useModalBehavior({
@@ -382,8 +387,19 @@ export function BulkRevealResults({
   }
 
   const copyLog = (): void => {
-    if (copyToClipboard(formatClaimLog(report))) {
+    if (copyToClipboard(log)) {
       showFlashToast('Log copied to clipboard')
+    }
+  }
+
+  const downloadLog = (): void => {
+    const filename = getRevealLogFilename()
+
+    try {
+      downloadTextFile(log, filename)
+      showFlashToast(`Download started: ${filename}`)
+    } catch (error) {
+      showErrorToast(error, 'Failed to start log download')
     }
   }
 
@@ -445,9 +461,7 @@ export function BulkRevealResults({
           >
             {report.exportSucceeded ? (
               report.exportDestination === 'clipboard' ? (
-                <>
-                  Export copied to clipboard. <strong>Paste it before copying the log.</strong>
-                </>
+                <>Export copied to clipboard.</>
               ) : (
                 <>
                   Download started: <strong>{report.exportFilename}</strong>
@@ -555,12 +569,15 @@ export function BulkRevealResults({
           </div>
         </div>
 
-        <footer class={styles.modal_footer}>
+        <footer class={`${styles.modal_footer} ${styles.result_footer}`}>
           <button type="button" class={styles.modal_secondary_button} onClick={onClose}>
             Close
           </button>
           <button type="button" class={styles.modal_primary_button} onClick={copyLog} autofocus>
             Copy Log
+          </button>
+          <button type="button" class={styles.modal_secondary_button} onClick={downloadLog}>
+            Download Log
           </button>
         </footer>
       </section>
