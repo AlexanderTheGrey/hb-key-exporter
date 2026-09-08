@@ -1,6 +1,7 @@
-import { createSignal, onCleanup, onMount, Show, type Accessor, type Setter } from 'solid-js'
+import { onCleanup, onMount, type Accessor, type Setter } from 'solid-js'
 import { isKeylessProduct } from '../claim-report'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
+import { captureProductReference, resolveProductReference } from '../product-reference'
 import {
   getRegionCountryCodes,
   hasRegionRestrictions,
@@ -25,60 +26,33 @@ import DataTable, { type Api } from 'datatables.net-dt'
 import { hm } from '@violentmonkey/dom'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
-import { KeylessRedemptionConfirmation } from './BulkRevealDialogs'
-
-type PendingKeylessRedemption = {
-  product: Product
-  gift: boolean
-  resolve: (confirmed: boolean) => void
-}
 
 const PAGING_POSITION_TOLERANCE = 0.5
 
 export function Table({
   products,
+  latestProducts,
+  currentDt,
   steamId,
   setDt,
+  waitForProductRefresh,
+  requestKeylessConfirmation,
+  finishKeylessRedemption,
   initialState,
   onStateRestored,
 }: {
   products: Product[]
+  latestProducts: Accessor<Product[] | undefined>
+  currentDt: Accessor<Api<Product> | null>
   steamId: Accessor<string | null>
   setDt: Setter<Api<Product> | null>
+  waitForProductRefresh: () => Promise<void>
+  requestKeylessConfirmation: (product: Product, gift: boolean) => Promise<boolean>
+  finishKeylessRedemption: () => void
   initialState?: TableState | null
   onStateRestored?: () => void
 }) {
   let tableRef!: HTMLTableElement
-  const [pendingKeylessRedemption, setPendingKeylessRedemption] =
-    createSignal<PendingKeylessRedemption | null>(null)
-  const [keylessRedemptionProcessing, setKeylessRedemptionProcessing] = createSignal(false)
-
-  const requestKeylessConfirmation = (product: Product, gift: boolean): Promise<boolean> => {
-    if (pendingKeylessRedemption()) return Promise.resolve(false)
-
-    setKeylessRedemptionProcessing(false)
-    return new Promise((resolve) => setPendingKeylessRedemption({ product, gift, resolve }))
-  }
-
-  const cancelKeylessRedemption = (): void => {
-    if (keylessRedemptionProcessing()) return
-
-    const pending = pendingKeylessRedemption()
-    if (!pending) return
-
-    setPendingKeylessRedemption(null)
-    pending.resolve(false)
-  }
-
-  const confirmKeylessRedemption = (): void => {
-    const pending = pendingKeylessRedemption()
-    if (!pending || keylessRedemptionProcessing()) return
-
-    setKeylessRedemptionProcessing(true)
-    pending.resolve(true)
-  }
-
-  onCleanup(() => pendingKeylessRedemption()?.resolve(false))
 
   onMount(() => {
     console.debug('Mounting table with', products.length, 'products')
@@ -646,16 +620,40 @@ export function Table({
 
     const revealProduct = async (row: Product, gift: boolean): Promise<void> => {
       const keyless = isKeylessProduct(row)
-      if (keyless && !(await requestKeylessConfirmation(row, gift))) return
+      let keylessConfirmed = false
 
       try {
-        if (hasRedeemedKeyValue(row.redeemed_key_val) || row.is_gift) return
+        const reference = captureProductReference(products, row)
 
-        const value = await redeem(row, gift)
-        row.redeemed_key_val = value
-        row.type = gift ? 'Gift' : 'Key'
-        row.is_gift = gift
-        dt.rows((_index, product) => product === row)
+        if (keyless) {
+          keylessConfirmed = await requestKeylessConfirmation(row, gift)
+          if (!keylessConfirmed) return
+        }
+
+        // A Steam notice can schedule a refresh just before a reveal or while a keyless
+        // confirmation is open. Let it finish, then operate on the current product object.
+        await waitForProductRefresh()
+        const beforeRedeem = latestProducts()
+        if (!beforeRedeem) throw new Error('Product data is unavailable. Please try again.')
+
+        const currentProduct = resolveProductReference(reference, beforeRedeem)
+        if (hasRedeemedKeyValue(currentProduct.redeemed_key_val) || currentProduct.is_gift) return
+
+        const value = await redeem(currentProduct, gift)
+
+        // The table can be rebuilt while Humble is processing the request. Re-resolve the product
+        // before mutating/invalidation so we never write to a stale row or destroyed DataTable.
+        await waitForProductRefresh()
+        const afterRedeem = latestProducts()
+        if (!afterRedeem) throw new Error('Product data is unavailable. Please try again.')
+
+        const latestProduct = resolveProductReference(reference, afterRedeem)
+        latestProduct.redeemed_key_val = value
+        latestProduct.type = gift ? 'Gift' : 'Key'
+        latestProduct.is_gift = gift
+
+        currentDt()
+          ?.rows((_index, product) => product === latestProduct)
           .invalidate('data')
           .draw(false)
 
@@ -671,10 +669,7 @@ export function Table({
       } catch (error) {
         showErrorToast(error)
       } finally {
-        if (keyless) {
-          setPendingKeylessRedemption(null)
-          setKeylessRedemptionProcessing(false)
-        }
+        if (keylessConfirmed) finishKeylessRedemption()
       }
     }
 
@@ -852,30 +847,49 @@ export function Table({
                       const target = e.currentTarget as HTMLButtonElement
                       target.disabled = true
                       target.innerHTML = '<i class="hb hb-spin hb-spinner"></i>'
+                      const appId = row.steam_app_id!
+                      const steamIdAtRequest = steamId()
                       try {
-                        const result = await fetchRedeemedDate(row.steam_app_id!)
+                        const result = await fetchRedeemedDate(appId)
                         if (result) {
-                          const appId = row.steam_app_id!
-
-                          setRedeemedDate(appId, result, steamId())
-                          clearSteamSupportNotice(appId)
-
-                          for (const product of products) {
-                            if (product.steam_app_id === appId) {
-                              product.redeemed_date = result
-                            }
+                          if (steamId() !== steamIdAtRequest) {
+                            throw new Error(
+                              'Steam account changed while fetching. Please try again.'
+                            )
                           }
 
-                          dt.rows((_idx, product) => product.steam_app_id === appId)
+                          setRedeemedDate(appId, result, steamIdAtRequest)
+                          clearSteamSupportNotice(appId)
+
+                          // A product refresh may replace the table while Steam Support is loading.
+                          // Wait for it to settle, then update the current product objects/table.
+                          await waitForProductRefresh()
+                          if (steamId() !== steamIdAtRequest) {
+                            throw new Error(
+                              'Steam account changed while fetching. Please try again.'
+                            )
+                          }
+
+                          const currentProducts = latestProducts()
+                          if (!currentProducts) {
+                            throw new Error('Product data is unavailable. Please try again.')
+                          }
+
+                          for (const product of currentProducts) {
+                            if (product.steam_app_id === appId) product.redeemed_date = result
+                          }
+
+                          currentDt()
+                            ?.rows((_idx, product) => product.steam_app_id === appId)
                             .invalidate('data')
                             .draw('page')
                         } else {
-                          showSteamSupportNotice(row.steam_app_id!)
+                          showSteamSupportNotice(appId)
                           target.disabled = false
                           target.innerHTML = '<i class="hb hb-clock"></i>'
                         }
                       } catch (err) {
-                        showSteamSupportNotice(row.steam_app_id!)
+                        showSteamSupportNotice(appId)
                         showErrorToast(err, 'Failed to fetch')
                         target.disabled = false
                         target.innerHTML = '<i class="hb hb-clock"></i>'
@@ -1282,20 +1296,5 @@ export function Table({
     })
   })
   console.debug('Table Loaded')
-  return (
-    <>
-      <table ref={tableRef} id="hb_extractor-table" class="display compact"></table>
-      <Show when={pendingKeylessRedemption()} keyed>
-        {(pending) => (
-          <KeylessRedemptionConfirmation
-            product={pending.product}
-            gift={pending.gift}
-            processing={keylessRedemptionProcessing}
-            onCancel={cancelKeylessRedemption}
-            onConfirm={confirmKeylessRedemption}
-          />
-        )}
-      </Show>
-    </>
-  )
+  return <table ref={tableRef} id="hb_extractor-table" class="display compact"></table>
 }

@@ -16,6 +16,11 @@ import {
 } from '../table-filter'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
 import {
+  applyRedeemedProductState,
+  captureProductReferences,
+  resolveProductReferences,
+} from '../product-reference'
+import {
   exportCSV,
   loadCsvExportPreferences,
   resolveCsvColumnIds,
@@ -44,11 +49,9 @@ const claimProducts = async (
 ): Promise<{
   successes: ClaimSuccess<Product>[]
   failures: ClaimFailure<Product>[]
-  updated: Set<Product>
 }> => {
   const successes: ClaimSuccess<Product>[] = []
   const failures: ClaimFailure<Product>[] = []
-  const updated = new Set<Product>()
   let completed = 0
 
   await forEachConcurrent(products, CLAIM_CONCURRENCY, async (product, index) => {
@@ -56,7 +59,6 @@ const claimProducts = async (
       product.redeemed_key_val = await redeem(product, gift)
       product.type = gift ? 'Gift' : 'Key'
       product.is_gift = gift
-      updated.add(product)
       successes.push({ index, product })
     } catch (error) {
       console.error('Error redeeming product:', product.machine_name, error)
@@ -69,7 +71,7 @@ const claimProducts = async (
   successes.sort((left, right) => left.index - right.index)
   failures.sort((left, right) => left.index - right.index)
 
-  return { successes, failures, updated }
+  return { successes, failures }
 }
 
 const terminateExport = (text: string): string => (text ? `${text}\n` : '')
@@ -187,7 +189,15 @@ const getEmptyExportMessage = (type: ExportType, products: Product[]): string =>
   return 'Empty export'
 }
 
-export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
+export function Actions({
+  dt,
+  products,
+  waitForProductRefresh,
+}: {
+  dt: Accessor<Api<Product> | null>
+  products: Accessor<Product[] | undefined>
+  waitForProductRefresh: () => Promise<void>
+}) {
   const [exportType, setExportType] = createSignal<ExportType>('csv')
   const [claim, setClaim] = createSignal(false)
   const [claimType, setClaimType] = createSignal('key')
@@ -303,26 +313,63 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
     setExportingDestination(destination)
 
     try {
-      const toExport = table.rows({ search: 'applied' }).data().toArray() as Product[]
+      const initialSelection = table.rows({ search: 'applied' }).data().toArray() as Product[]
       const claimAsGift = claimType() === 'gift'
       const claimable = claim()
-        ? toExport.filter((product) => !hasRedeemedKeyValue(product.redeemed_key_val))
+        ? initialSelection.filter((product) => !hasRedeemedKeyValue(product.redeemed_key_val))
         : []
+      let toExport = initialSelection
       let report: ClaimReport<Product> | null = null
 
       if (claimable.length) {
+        const initialProducts = products()
+        if (!initialProducts) throw new Error('Product data is unavailable. Please try again.')
+
+        const selectionReferences = captureProductReferences(initialProducts, initialSelection)
+        const claimableReferences = captureProductReferences(initialProducts, claimable)
         const plan = createClaimPlan(claimable)
         const confirmed = await confirmBulkReveal(plan, claimAsGift, destination)
         if (!confirmed) return
 
-        const { successes, failures, updated } = await claimProducts(
-          claimable,
+        // A Steam notice can schedule a product refresh while the confirmation is open. Resolve the
+        // exact confirmed rows against the newest product objects before revealing anything.
+        await waitForProductRefresh()
+        const latestBeforeClaim = products()
+        if (!latestBeforeClaim) throw new Error('Product data is unavailable. Please try again.')
+
+        const currentClaimable = resolveProductReferences(claimableReferences, latestBeforeClaim)
+        const { successes, failures } = await claimProducts(
+          currentClaimable,
           claimAsGift,
           setBulkRevealProgress
         )
 
-        if (updated.size) {
-          table
+        // A refresh can also finish while reveal requests are in flight. Resolve once more, then
+        // carry successful reveal state onto the latest objects so refreshed fields (such as
+        // Steam ownership) and newly revealed keys are both preserved in the export.
+        await waitForProductRefresh()
+        const latestAfterClaim = products()
+        if (!latestAfterClaim) throw new Error('Product data is unavailable. Please try again.')
+
+        toExport = resolveProductReferences(selectionReferences, latestAfterClaim)
+        const latestClaimable = resolveProductReferences(claimableReferences, latestAfterClaim)
+        const updated = new Set<Product>()
+
+        const currentSuccesses: ClaimSuccess<Product>[] = successes.map(({ index, product }) => {
+          const latestProduct = latestClaimable[index]
+          applyRedeemedProductState(latestProduct, product)
+          updated.add(latestProduct)
+          return { index, product: latestProduct }
+        })
+        const currentFailures: ClaimFailure<Product>[] = failures.map(({ index, error }) => ({
+          index,
+          product: latestClaimable[index],
+          error,
+        }))
+
+        const currentTable = dt()
+        if (currentTable && updated.size) {
+          currentTable
             .rows((_index, product) => updated.has(product))
             .invalidate('data')
             .draw(false)
@@ -330,8 +377,8 @@ export function Actions({ dt }: { dt: Accessor<Api<Product> | null> }) {
 
         report = {
           gift: claimAsGift,
-          successes,
-          failures,
+          successes: currentSuccesses,
+          failures: currentFailures,
           typeCounts: plan.typeCounts,
           keylessCount: plan.keylessCount,
           exportDestination: destination,
