@@ -404,7 +404,11 @@ export function BulkRevealResults({
   }
 
   return (
-    <div class={styles.modal_backdrop} role="presentation">
+    <div
+      class={styles.modal_backdrop}
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && event.preventDefault()}
+    >
       <section
         ref={dialogRef}
         class={`${styles.modal} ${styles.modal_wide}`}
@@ -461,7 +465,7 @@ export function BulkRevealResults({
           >
             {report.exportSucceeded ? (
               report.exportDestination === 'clipboard' ? (
-                <>Export copied to clipboard.</>
+                'Export copied to clipboard.'
               ) : (
                 <>
                   Download started: <strong>{report.exportFilename}</strong>
