@@ -17,7 +17,14 @@ import { Table } from './components/Table'
 import { captureTableState, type TableState } from './table-state'
 import { Refresh } from './components/Refresh'
 import { Actions } from './components/Actions'
+import { KeylessRedemptionConfirmation } from './components/BulkRevealDialogs'
 import type { Api } from 'datatables.net-dt'
+
+type PendingKeylessRedemption = {
+  product: Product
+  gift: boolean
+  resolve: (confirmed: boolean) => void
+}
 
 export function App() {
   const [open, setOpen] = createSignal(false)
@@ -29,11 +36,27 @@ export function App() {
   const [pendingTableState, setPendingTableState] = createSignal<TableState | null>(null)
   const [dt, setDt] = createSignal<Api<Product> | null>(null)
 
+  const [pendingKeylessRedemption, setPendingKeylessRedemption] =
+    createSignal<PendingKeylessRedemption | null>(null)
+  const [keylessRedemptionProcessing, setKeylessRedemptionProcessing] = createSignal(false)
+
   let checkSteamAccountTimer: number | undefined
   let refreshInFlight: Promise<void> | null = null
+  const pendingSteamPageRefreshes = new Set<Promise<void>>()
 
   const refreshAfterSteamPageOpen = () => {
-    window.setTimeout(() => refreshProducts(), 3000)
+    const pendingRefresh = new Promise<void>((resolve) => {
+      window.setTimeout(() => {
+        void Promise.resolve()
+          .then(refreshProducts)
+          .catch((error) => showErrorToast(error, 'Failed to refresh products'))
+          .finally(() => {
+            pendingSteamPageRefreshes.delete(pendingRefresh)
+            resolve()
+          })
+      }, 3000)
+    })
+    pendingSteamPageRefreshes.add(pendingRefresh)
   }
 
   const checkSteamAccountChanged = () => {
@@ -148,6 +171,44 @@ export function App() {
     return refreshInFlight
   }
 
+  const waitForProductRefresh = async (): Promise<void> => {
+    while (refreshInFlight || pendingSteamPageRefreshes.size) {
+      const pending = [...pendingSteamPageRefreshes]
+      if (refreshInFlight) pending.push(refreshInFlight)
+      await Promise.all(pending)
+    }
+  }
+
+  const requestKeylessConfirmation = (product: Product, gift: boolean): Promise<boolean> => {
+    if (pendingKeylessRedemption()) return Promise.resolve(false)
+
+    setKeylessRedemptionProcessing(false)
+    return new Promise((resolve) => setPendingKeylessRedemption({ product, gift, resolve }))
+  }
+
+  const cancelKeylessRedemption = (): void => {
+    if (keylessRedemptionProcessing()) return
+
+    const pending = pendingKeylessRedemption()
+    if (!pending) return
+
+    setPendingKeylessRedemption(null)
+    pending.resolve(false)
+  }
+
+  const confirmKeylessRedemption = (): void => {
+    const pending = pendingKeylessRedemption()
+    if (!pending || keylessRedemptionProcessing()) return
+
+    setKeylessRedemptionProcessing(true)
+    pending.resolve(true)
+  }
+
+  const finishKeylessRedemption = (): void => {
+    setPendingKeylessRedemption(null)
+    setKeylessRedemptionProcessing(false)
+  }
+
   onMount(() => {
     const checkSteamAccountChangedAfterVisibility = () => {
       if (!document.hidden) checkSteamAccountChanged()
@@ -157,6 +218,7 @@ export function App() {
     document.addEventListener('visibilitychange', checkSteamAccountChangedAfterVisibility)
 
     onCleanup(() => {
+      pendingKeylessRedemption()?.resolve(false)
       window.clearTimeout(checkSteamAccountTimer)
       window.removeEventListener('focus', checkSteamAccountChanged)
       document.removeEventListener('visibilitychange', checkSteamAccountChangedAfterVisibility)
@@ -184,14 +246,30 @@ export function App() {
           {(loadedProducts) => (
             <Table
               products={loadedProducts}
+              latestProducts={products}
+              currentDt={dt}
               steamId={steamId}
               setDt={setDt}
+              waitForProductRefresh={waitForProductRefresh}
+              requestKeylessConfirmation={requestKeylessConfirmation}
+              finishKeylessRedemption={finishKeylessRedemption}
               initialState={pendingTableState()}
               onStateRestored={() => setPendingTableState(null)}
             />
           )}
         </Show>
-        <Actions dt={dt} />
+        <Show when={pendingKeylessRedemption()} keyed>
+          {(pending) => (
+            <KeylessRedemptionConfirmation
+              product={pending.product}
+              gift={pending.gift}
+              processing={keylessRedemptionProcessing}
+              onCancel={cancelKeylessRedemption}
+              onConfirm={confirmKeylessRedemption}
+            />
+          )}
+        </Show>
+        <Actions dt={dt} products={products} waitForProductRefresh={waitForProductRefresh} />
       </div>
     </>
   )

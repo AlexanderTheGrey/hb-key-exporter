@@ -1,4 +1,4 @@
-import { For, onCleanup, onMount, Show, type Accessor } from 'solid-js'
+import { For, Show, type Accessor } from 'solid-js'
 import {
   formatClaimLog,
   getClaimTypeLabel,
@@ -7,13 +7,19 @@ import {
   isKeylessProduct,
   type ClaimPlan,
   type ClaimReport,
+  type ExportDestination,
 } from '../claim-report'
-import { copyToClipboard, showFlashToast, type Product } from '../util'
+import { downloadTextFile, formatLocalTimestamp } from '../download'
+import { useModalBehavior } from '../modal'
+import { copyToClipboard, showErrorToast, showFlashToast, type Product } from '../util'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
 
 const pluralize = (count: number, singular: string, plural = `${singular}s`): string =>
   count === 1 ? singular : plural
+
+const getRevealLogFilename = (date = new Date()): string =>
+  `humble-bundle-reveal-log-${formatLocalTimestamp(date)}.log`
 
 const claimTypeIconClasses: Record<string, string> = {
   battlenet: 'hb-bnet',
@@ -43,18 +49,6 @@ const ClaimType = ({ product }: { product: Product }) => {
   )
 }
 
-const useEscapeKey = (onEscape: () => void, disabled?: Accessor<boolean>): void => {
-  const handleKeyDown = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape' || disabled?.()) return
-
-    event.preventDefault()
-    onEscape()
-  }
-
-  onMount(() => document.addEventListener('keydown', handleKeyDown))
-  onCleanup(() => document.removeEventListener('keydown', handleKeyDown))
-}
-
 export function KeylessRedemptionConfirmation({
   product,
   gift,
@@ -77,8 +71,12 @@ export function KeylessRedemptionConfirmation({
         'Continuing will redeem this item immediately to the third-party account linked to your',
         'Humble Bundle account. No transferable key will be shown.',
       ].join(' ')
-
-  useEscapeKey(onCancel, processing)
+  let dialogRef: HTMLElement | undefined
+  const { handleKeyDown, stopPropagation } = useModalBehavior({
+    dialog: () => dialogRef,
+    onEscape: onCancel,
+    escapeDisabled: processing,
+  })
 
   return (
     <div
@@ -87,12 +85,16 @@ export function KeylessRedemptionConfirmation({
       onMouseDown={(event) => event.target === event.currentTarget && !processing() && onCancel()}
     >
       <section
+        ref={dialogRef}
         class={styles.modal}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-keyless-confirm-title"
         aria-busy={processing()}
         tabindex="-1"
+        on:keydown={handleKeyDown}
+        on:keypress={stopPropagation}
+        on:keyup={stopPropagation}
       >
         <header class={styles.modal_header}>
           <div>
@@ -113,7 +115,7 @@ export function KeylessRedemptionConfirmation({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <p class={styles.modal_lead}>
             <strong>{product.human_name}</strong> is marked by Humble for direct redemption.
           </p>
@@ -166,6 +168,7 @@ export function KeylessRedemptionConfirmation({
 export function BulkRevealConfirmation({
   plan,
   gift,
+  destination,
   processing,
   progress,
   onCancel,
@@ -173,6 +176,7 @@ export function BulkRevealConfirmation({
 }: {
   plan: ClaimPlan<Product>
   gift: boolean
+  destination: ExportDestination
   processing: Accessor<boolean>
   progress: Accessor<number>
   onCancel: () => void
@@ -180,6 +184,8 @@ export function BulkRevealConfirmation({
 }) {
   const count = plan.products.length
   const action = gift ? 'create gift links for' : 'reveal'
+  const destinationVerb = destination === 'download' ? 'download' : 'copy'
+  const destinationProgress = destination === 'download' ? 'Downloading' : 'Copying'
   const keylessWarning = gift
     ? [
         'These may redeem directly to the third-party account linked to your Humble Bundle',
@@ -190,7 +196,12 @@ export function BulkRevealConfirmation({
         'your Humble Bundle account; they will not produce transferable keys.',
       ].join(' ')
 
-  useEscapeKey(onCancel, processing)
+  let dialogRef: HTMLElement | undefined
+  const { handleKeyDown, stopPropagation } = useModalBehavior({
+    dialog: () => dialogRef,
+    onEscape: onCancel,
+    escapeDisabled: processing,
+  })
 
   return (
     <div
@@ -199,18 +210,24 @@ export function BulkRevealConfirmation({
       onMouseDown={(event) => event.target === event.currentTarget && !processing() && onCancel()}
     >
       <section
+        ref={dialogRef}
         class={styles.modal}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-confirm-title"
         aria-busy={processing()}
         tabindex="-1"
+        on:keydown={handleKeyDown}
+        on:keypress={stopPropagation}
+        on:keyup={stopPropagation}
       >
         <header class={styles.modal_header}>
           <div>
             <p class={styles.modal_eyebrow}>Bulk reveal confirmation</p>
             <h2 id="hb_extractor-confirm-title" class={styles.modal_title}>
-              {gift ? 'Create gift links and export?' : 'Reveal keys and export?'}
+              {gift
+                ? `Create gift links and ${destinationVerb}?`
+                : `Reveal keys and ${destinationVerb}?`}
             </h2>
           </div>
           <button
@@ -225,7 +242,7 @@ export function BulkRevealConfirmation({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <p class={styles.modal_lead}>
             The exporter is about to {action} <strong>{count}</strong>{' '}
             {pluralize(count, 'unrevealed item')} across <strong>{plan.bundleCount}</strong>{' '}
@@ -332,12 +349,12 @@ export function BulkRevealConfirmation({
             {processing() ? (
               <>
                 <i class="hb hb-spin hb-spinner" aria-hidden="true"></i>{' '}
-                {gift ? 'Creating & Exporting…' : 'Revealing & Exporting…'}
+                {gift ? 'Creating' : 'Revealing'} & {destinationProgress}…
               </>
             ) : gift ? (
-              'Create & Export'
+              `Create & ${destination === 'download' ? 'Download' : 'Copy'}`
             ) : (
-              'Reveal & Export'
+              `Reveal & ${destination === 'download' ? 'Download' : 'Copy'}`
             )}
           </button>
         </footer>
@@ -355,9 +372,13 @@ export function BulkRevealResults({
 }) {
   const groups = groupClaimResults(report)
   const requested = report.successes.length + report.failures.length
+  const log = formatClaimLog(report)
   let resultGroupsRef!: HTMLDivElement
-
-  useEscapeKey(onClose)
+  let dialogRef: HTMLElement | undefined
+  const { handleKeyDown, stopPropagation } = useModalBehavior({
+    dialog: () => dialogRef,
+    onEscape: onClose,
+  })
 
   const setAllBundlesOpen = (open: boolean): void => {
     for (const bundle of resultGroupsRef.querySelectorAll<HTMLDetailsElement>('details')) {
@@ -366,19 +387,38 @@ export function BulkRevealResults({
   }
 
   const copyLog = (): void => {
-    if (copyToClipboard(formatClaimLog(report))) {
+    if (copyToClipboard(log)) {
       showFlashToast('Log copied to clipboard')
     }
   }
 
+  const downloadLog = (): void => {
+    const filename = getRevealLogFilename()
+
+    try {
+      downloadTextFile(log, filename)
+      showFlashToast(`Download started: ${filename}`)
+    } catch (error) {
+      showErrorToast(error, 'Failed to start log download')
+    }
+  }
+
   return (
-    <div class={styles.modal_backdrop} role="presentation">
+    <div
+      class={styles.modal_backdrop}
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && event.preventDefault()}
+    >
       <section
+        ref={dialogRef}
         class={`${styles.modal} ${styles.modal_wide}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hb_extractor-results-title"
         tabindex="-1"
+        on:keydown={handleKeyDown}
+        on:keypress={stopPropagation}
+        on:keyup={stopPropagation}
       >
         <header class={styles.modal_header}>
           <div>
@@ -398,7 +438,7 @@ export function BulkRevealResults({
           </button>
         </header>
 
-        <div class={styles.modal_body}>
+        <div class={styles.modal_body} data-modal-scroll-body>
           <div class={styles.result_summary} aria-live="polite">
             <div class={styles.result_summary_item}>
               <strong>{requested}</strong>
@@ -416,21 +456,31 @@ export function BulkRevealResults({
 
           <div
             class={`${styles.export_status} ${
-              report.exportCopied
+              report.exportSucceeded
                 ? styles.export_status_success
                 : report.exportEmpty
                   ? styles.export_status_warning
                   : styles.export_status_failure
             }`}
           >
-            {report.exportCopied ? (
-              <>
-                Export copied to clipboard. <strong>Paste it before copying the log.</strong>
-              </>
+            {report.exportSucceeded ? (
+              report.exportDestination === 'clipboard' ? (
+                'Export copied to clipboard.'
+              ) : (
+                <>
+                  Download started: <strong>{report.exportFilename}</strong>
+                </>
+              )
             ) : report.exportEmpty ? (
-              'The reveal finished, but the selected export was empty. Your clipboard was left unchanged.'
-            ) : (
+              report.exportDestination === 'clipboard' ? (
+                'The reveal finished, but the selected export was empty. Your clipboard was left unchanged.'
+              ) : (
+                'The reveal finished, but the selected export was empty. No download was started.'
+              )
+            ) : report.exportDestination === 'clipboard' ? (
               'The reveal finished, but the export could not be copied to your clipboard.'
+            ) : (
+              'The reveal finished, but the download could not be started.'
             )}
           </div>
 
@@ -523,12 +573,15 @@ export function BulkRevealResults({
           </div>
         </div>
 
-        <footer class={styles.modal_footer}>
+        <footer class={`${styles.modal_footer} ${styles.result_footer}`}>
           <button type="button" class={styles.modal_secondary_button} onClick={onClose}>
             Close
           </button>
           <button type="button" class={styles.modal_primary_button} onClick={copyLog} autofocus>
             Copy Log
+          </button>
+          <button type="button" class={styles.modal_secondary_button} onClick={downloadLog}>
+            Download Log
           </button>
         </footer>
       </section>

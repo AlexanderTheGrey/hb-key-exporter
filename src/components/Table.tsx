@@ -1,6 +1,7 @@
-import { createSignal, onCleanup, onMount, Show, type Accessor, type Setter } from 'solid-js'
+import { onCleanup, onMount, type Accessor, type Setter } from 'solid-js'
 import { isKeylessProduct } from '../claim-report'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
+import { captureProductReference, resolveProductReference } from '../product-reference'
 import {
   getRegionCountryCodes,
   hasRegionRestrictions,
@@ -25,58 +26,33 @@ import DataTable, { type Api } from 'datatables.net-dt'
 import { hm } from '@violentmonkey/dom'
 // @ts-expect-error missing types
 import styles from '../style.module.css'
-import { KeylessRedemptionConfirmation } from './BulkRevealDialogs'
 
-type PendingKeylessRedemption = {
-  product: Product
-  gift: boolean
-  resolve: (confirmed: boolean) => void
-}
+const PAGING_POSITION_TOLERANCE = 0.5
 
 export function Table({
   products,
+  latestProducts,
+  currentDt,
   steamId,
   setDt,
+  waitForProductRefresh,
+  requestKeylessConfirmation,
+  finishKeylessRedemption,
   initialState,
   onStateRestored,
 }: {
   products: Product[]
+  latestProducts: Accessor<Product[] | undefined>
+  currentDt: Accessor<Api<Product> | null>
   steamId: Accessor<string | null>
   setDt: Setter<Api<Product> | null>
+  waitForProductRefresh: () => Promise<void>
+  requestKeylessConfirmation: (product: Product, gift: boolean) => Promise<boolean>
+  finishKeylessRedemption: () => void
   initialState?: TableState | null
   onStateRestored?: () => void
 }) {
   let tableRef!: HTMLTableElement
-  const [pendingKeylessRedemption, setPendingKeylessRedemption] =
-    createSignal<PendingKeylessRedemption | null>(null)
-  const [keylessRedemptionProcessing, setKeylessRedemptionProcessing] = createSignal(false)
-
-  const requestKeylessConfirmation = (product: Product, gift: boolean): Promise<boolean> => {
-    if (pendingKeylessRedemption()) return Promise.resolve(false)
-
-    setKeylessRedemptionProcessing(false)
-    return new Promise((resolve) => setPendingKeylessRedemption({ product, gift, resolve }))
-  }
-
-  const cancelKeylessRedemption = (): void => {
-    if (keylessRedemptionProcessing()) return
-
-    const pending = pendingKeylessRedemption()
-    if (!pending) return
-
-    setPendingKeylessRedemption(null)
-    pending.resolve(false)
-  }
-
-  const confirmKeylessRedemption = (): void => {
-    const pending = pendingKeylessRedemption()
-    if (!pending || keylessRedemptionProcessing()) return
-
-    setKeylessRedemptionProcessing(true)
-    pending.resolve(true)
-  }
-
-  onCleanup(() => pendingKeylessRedemption()?.resolve(false))
 
   onMount(() => {
     console.debug('Mounting table with', products.length, 'products')
@@ -567,15 +543,52 @@ export function Table({
     pageJump.className = styles.page_jump
     pageJump.append('Jump to', pageJumpInput, 'of', pageJumpTotal)
 
+    let measuredPagingNumberCharacters = 0
+
     const syncPageJump = (): void => {
       const info = dt.page.info()
       const hasPages = info.pages > 0
 
       pageJumpInput.disabled = !hasPages
       pageJumpInput.value = hasPages ? String(info.page + 1) : ''
-      pageJumpInput.maxLength = Math.max(1, String(info.pages).length)
-      pageJumpInput.style.width = `${Math.max(4, String(info.pages).length + 2)}ch`
+      const pageDigits = Math.max(1, String(info.pages).length)
+      const pageNumberCharacters = pageDigits + Math.floor((pageDigits - 1) / 3)
+
+      pageJumpInput.maxLength = pageDigits
+      // Include the input padding and borders plus a small buffer for fractional-pixel text metrics.
+      pageJumpInput.style.width = `calc(${pageDigits}ch + 1.2em + 4px)`
       pageJumpTotal.textContent = String(info.pages)
+
+      const pageControls = pageJump.parentElement
+      if (!pageControls) return
+
+      pageControls.style.setProperty(
+        '--hb-paging-number-content-width',
+        `${pageNumberCharacters}ch`
+      )
+
+      if (pageNumberCharacters === measuredPagingNumberCharacters) return
+
+      // DataTables renders page numbers as buttons and ellipses as spans, which can resolve
+      // relative widths differently. Measure a real number button so every slot occupies the same
+      // space and the surrounding navigation controls stay fixed while paging.
+      pageControls.style.removeProperty('--hb-paging-number-slot-width')
+      pageControls.style.removeProperty('--hb-paging-number-slot-margin-left')
+
+      const pageNumberButton = pageControls.querySelector<HTMLElement>(
+        '.dt-paging .dt-paging-button:not(.first):not(.previous):not(.next):not(.last)'
+      )
+      if (!pageNumberButton) return
+
+      const width = pageNumberButton.getBoundingClientRect().width
+      if (width <= 0) return
+
+      pageControls.style.setProperty('--hb-paging-number-slot-width', `${width}px`)
+      pageControls.style.setProperty(
+        '--hb-paging-number-slot-margin-left',
+        window.getComputedStyle(pageNumberButton).marginLeft
+      )
+      measuredPagingNumberCharacters = pageNumberCharacters
     }
 
     const jumpToPage = (): void => {
@@ -608,16 +621,40 @@ export function Table({
 
     const revealProduct = async (row: Product, gift: boolean): Promise<void> => {
       const keyless = isKeylessProduct(row)
-      if (keyless && !(await requestKeylessConfirmation(row, gift))) return
+      let keylessConfirmed = false
 
       try {
-        if (hasRedeemedKeyValue(row.redeemed_key_val) || row.is_gift) return
+        const reference = captureProductReference(products, row)
 
-        const value = await redeem(row, gift)
-        row.redeemed_key_val = value
-        row.type = gift ? 'Gift' : 'Key'
-        row.is_gift = gift
-        dt.rows((_index, product) => product === row)
+        if (keyless) {
+          keylessConfirmed = await requestKeylessConfirmation(row, gift)
+          if (!keylessConfirmed) return
+        }
+
+        // A Steam notice can schedule a refresh just before a reveal or while a keyless
+        // confirmation is open. Let it finish, then operate on the current product object.
+        await waitForProductRefresh()
+        const beforeRedeem = latestProducts()
+        if (!beforeRedeem) throw new Error('Product data is unavailable. Please try again.')
+
+        const currentProduct = resolveProductReference(reference, beforeRedeem)
+        if (hasRedeemedKeyValue(currentProduct.redeemed_key_val) || currentProduct.is_gift) return
+
+        const value = await redeem(currentProduct, gift)
+
+        // The table can be rebuilt while Humble is processing the request. Re-resolve the product
+        // before mutating/invalidation so we never write to a stale row or destroyed DataTable.
+        await waitForProductRefresh()
+        const afterRedeem = latestProducts()
+        if (!afterRedeem) throw new Error('Product data is unavailable. Please try again.')
+
+        const latestProduct = resolveProductReference(reference, afterRedeem)
+        latestProduct.redeemed_key_val = value
+        latestProduct.type = gift ? 'Gift' : 'Key'
+        latestProduct.is_gift = gift
+
+        currentDt()
+          ?.rows((_index, product) => product === latestProduct)
           .invalidate('data')
           .draw(false)
 
@@ -633,10 +670,7 @@ export function Table({
       } catch (error) {
         showErrorToast(error)
       } finally {
-        if (keyless) {
-          setPendingKeylessRedemption(null)
-          setKeylessRedemptionProcessing(false)
-        }
+        if (keylessConfirmed) finishKeylessRedemption()
       }
     }
 
@@ -648,6 +682,11 @@ export function Table({
             [10, 25, 50, 100, 500, 1000, 5000, -1],
             [10, 25, 50, 100, 500, '1,000', '5,000', 'All'],
           ],
+          language: {
+            searchBuilder: {
+              data: 'Field',
+            },
+          },
           columnDefs: [
             {
               targets: [7, 9],
@@ -809,30 +848,49 @@ export function Table({
                       const target = e.currentTarget as HTMLButtonElement
                       target.disabled = true
                       target.innerHTML = '<i class="hb hb-spin hb-spinner"></i>'
+                      const appId = row.steam_app_id!
+                      const steamIdAtRequest = steamId()
                       try {
-                        const result = await fetchRedeemedDate(row.steam_app_id!)
+                        const result = await fetchRedeemedDate(appId)
                         if (result) {
-                          const appId = row.steam_app_id!
-
-                          setRedeemedDate(appId, result, steamId())
-                          clearSteamSupportNotice(appId)
-
-                          for (const product of products) {
-                            if (product.steam_app_id === appId) {
-                              product.redeemed_date = result
-                            }
+                          if (steamId() !== steamIdAtRequest) {
+                            throw new Error(
+                              'Steam account changed while fetching. Please try again.'
+                            )
                           }
 
-                          dt.rows((_idx, product) => product.steam_app_id === appId)
+                          setRedeemedDate(appId, result, steamIdAtRequest)
+                          clearSteamSupportNotice(appId)
+
+                          // A product refresh may replace the table while Steam Support is loading.
+                          // Wait for it to settle, then update the current product objects/table.
+                          await waitForProductRefresh()
+                          if (steamId() !== steamIdAtRequest) {
+                            throw new Error(
+                              'Steam account changed while fetching. Please try again.'
+                            )
+                          }
+
+                          const currentProducts = latestProducts()
+                          if (!currentProducts) {
+                            throw new Error('Product data is unavailable. Please try again.')
+                          }
+
+                          for (const product of currentProducts) {
+                            if (product.steam_app_id === appId) product.redeemed_date = result
+                          }
+
+                          currentDt()
+                            ?.rows((_idx, product) => product.steam_app_id === appId)
                             .invalidate('data')
                             .draw('page')
                         } else {
-                          showSteamSupportNotice(row.steam_app_id!)
+                          showSteamSupportNotice(appId)
                           target.disabled = false
                           target.innerHTML = '<i class="hb hb-clock"></i>'
                         }
                       } catch (err) {
-                        showSteamSupportNotice(row.steam_app_id!)
+                        showSteamSupportNotice(appId)
                         showErrorToast(err, 'Failed to fetch')
                         target.disabled = false
                         target.innerHTML = '<i class="hb hb-clock"></i>'
@@ -1027,36 +1085,103 @@ export function Table({
     }
 
     const container = dt.table().container() as HTMLElement
+    const tableLayoutCell = container.querySelector<HTMLElement>(
+      '.dt-layout-table > .dt-layout-cell'
+    )
 
     let pagingTop: number | null = null
+    let pagingRestoreFrame: number | null = null
+
+    const clearPagingHeightReservation = (): void => {
+      tableLayoutCell?.style.removeProperty('min-height')
+    }
+
+    const cancelPagingRestore = (): void => {
+      if (pagingRestoreFrame == null) return
+
+      cancelAnimationFrame(pagingRestoreFrame)
+      pagingRestoreFrame = null
+    }
+
+    const resetPagingPositionStability = (): void => {
+      pagingTop = null
+      cancelPagingRestore()
+      clearPagingHeightReservation()
+    }
 
     const getPaging = () => container.querySelector<HTMLElement>('.dt-paging')
 
-    const rememberPagingTop = () => {
-      const rect = getPaging()?.getBoundingClientRect()
+    const rememberPagingTop = (): void => {
+      cancelPagingRestore()
 
+      const rect = getPaging()?.getBoundingClientRect()
       pagingTop = rect && rect.bottom > 0 && rect.top < window.innerHeight ? rect.top : null
+
+      // Each page transition starts from the table's natural height. Any extra height retained from
+      // the previous transition is only a fallback for a scroll-boundary shortfall.
+      clearPagingHeightReservation()
     }
 
-    const restorePagingTop = () => {
+    const clearPagingHeightReservationForNonPagingDraw = (): void => {
+      if (pagingTop != null) return
+
+      cancelPagingRestore()
+      clearPagingHeightReservation()
+    }
+
+    const restorePagingTop = (): void => {
       if (pagingTop == null) return
 
       const previousTop = pagingTop
       pagingTop = null
 
-      requestAnimationFrame(() => {
-        const nextTop = getPaging()?.getBoundingClientRect().top
-        if (nextTop != null) {
-          window.scrollBy({ top: nextTop - previousTop, behavior: 'auto' })
+      cancelPagingRestore()
+      pagingRestoreFrame = requestAnimationFrame(() => {
+        pagingRestoreFrame = null
+
+        const paging = getPaging()
+        if (!paging) return
+
+        const nextTop = paging.getBoundingClientRect().top
+        const scrollDelta = nextTop - previousTop
+
+        if (Math.abs(scrollDelta) > PAGING_POSITION_TOLERANCE) {
+          window.scrollBy({ top: scrollDelta, behavior: 'auto' })
         }
+
+        if (!tableLayoutCell) return
+
+        // Scrolling can be clamped at the top of the document when a shorter page replaces a
+        // taller one. Reserve only that uncompensated remainder below the table so the paging
+        // controls stay at the same viewport position without constraining any row content.
+        const residual = previousTop - paging.getBoundingClientRect().top
+        if (residual <= PAGING_POSITION_TOLERANCE) return
+
+        const naturalHeight = tableLayoutCell.getBoundingClientRect().height
+        tableLayoutCell.style.minHeight = `${naturalHeight + residual}px`
+
+        // Account for box-model/subpixel differences so the fallback remains exact rather than
+        // accumulating a small error across repeated transitions.
+        const correction = previousTop - paging.getBoundingClientRect().top
+        if (Math.abs(correction) <= PAGING_POSITION_TOLERANCE) return
+
+        const currentMinHeight = Number.parseFloat(tableLayoutCell.style.minHeight)
+        if (!Number.isFinite(currentMinHeight)) return
+
+        tableLayoutCell.style.minHeight = `${Math.max(naturalHeight, currentMinHeight + correction)}px`
       })
     }
 
     syncPageJump()
     dt.on('page', rememberPagingTop)
+    dt.on('draw', clearPagingHeightReservationForNonPagingDraw)
     dt.on('draw', restorePagingTop)
     dt.on('draw', syncPageJump)
+    // The table can initialize while the exporter is hidden. Re-measure paging geometry when
+    // DataTables recalculates its layout after the table becomes visible.
+    dt.on('column-sizing', syncPageJump)
     dt.on('draw', closeRegionPopover)
+    window.addEventListener('resize', resetPagingPositionStability)
 
     // Warnings when selecting certain column filters
 
@@ -1110,9 +1235,35 @@ export function Table({
       }
     }
 
+    const handleSearchBuilderChange = (event: Event): void => {
+      refreshWarnings()
+
+      const target = event.target
+      if (!(target instanceof HTMLSelectElement) || !target.classList.contains('dtsb-data')) return
+
+      const criterion = target.closest('.dtsb-criteria')
+      if (!criterion || !event.isTrusted) return
+
+      // SearchBuilder resets its internal condition/value state when the field changes, but v1.8.2
+      // can leave old multi-value controls in the DOM. Run after its handler and remove any stale
+      // controls only when the freshly populated condition selector is still at its placeholder.
+      queueMicrotask(() => {
+        if (!criterion.isConnected) return
+
+        const condition = criterion.querySelector<HTMLSelectElement>('select.dtsb-condition')
+        const valueContainer = criterion.querySelector<HTMLElement>('.dtsb-inputCont')
+        if (!condition || condition.value !== '' || !valueContainer) return
+
+        const jquery = DataTable.use('jq') as (element: HTMLElement) => SearchBuilderValue
+        for (const child of Array.from(valueContainer.children)) {
+          jquery(child as HTMLElement).remove()
+        }
+      })
+    }
+
     refreshWarnings()
 
-    searchBuilderRoot?.addEventListener('change', refreshWarnings)
+    searchBuilderRoot?.addEventListener('change', handleSearchBuilderChange)
 
     const observer = searchBuilderRoot ? new MutationObserver(refreshWarnings) : null
 
@@ -1125,10 +1276,14 @@ export function Table({
 
     onCleanup(() => {
       dt.off('page', rememberPagingTop)
+      dt.off('draw', clearPagingHeightReservationForNonPagingDraw)
       dt.off('draw', restorePagingTop)
       dt.off('draw', syncPageJump)
+      dt.off('column-sizing', syncPageJump)
       dt.off('draw', closeRegionPopover)
 
+      cancelPagingRestore()
+      window.removeEventListener('resize', resetPagingPositionStability)
       window.removeEventListener('resize', closeRegionPopover)
       window.removeEventListener('scroll', closeRegionPopover, true)
       regionPopover.removeEventListener('mouseenter', cancelRegionPopoverHide)
@@ -1137,7 +1292,7 @@ export function Table({
       cancelRegionPopoverHide()
       regionPopover.remove()
 
-      searchBuilderRoot?.removeEventListener('change', refreshWarnings)
+      searchBuilderRoot?.removeEventListener('change', handleSearchBuilderChange)
       observer?.disconnect()
       for (const warning of warnings) warning.element.remove()
 
@@ -1146,20 +1301,5 @@ export function Table({
     })
   })
   console.debug('Table Loaded')
-  return (
-    <>
-      <table ref={tableRef} id="hb_extractor-table" class="display compact"></table>
-      <Show when={pendingKeylessRedemption()} keyed>
-        {(pending) => (
-          <KeylessRedemptionConfirmation
-            product={pending.product}
-            gift={pending.gift}
-            processing={keylessRedemptionProcessing}
-            onCancel={cancelKeylessRedemption}
-            onConfirm={confirmKeylessRedemption}
-          />
-        )}
-      </Show>
-    </>
-  )
+  return <table ref={tableRef} id="hb_extractor-table" class="display compact"></table>
 }

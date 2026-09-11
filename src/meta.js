@@ -16,7 +16,9 @@
 // @homepageURL https://github.com/MrMarble/hb-key-exporter
 // @grant       GM_addStyle
 // @grant       GM_getResourceText
+// @grant       GM_getValue
 // @grant       GM_setClipboard
+// @grant       GM_setValue
 // @grant       GM_xmlhttpRequest
 // @connect     store.steampowered.com
 // @connect     help.steampowered.com

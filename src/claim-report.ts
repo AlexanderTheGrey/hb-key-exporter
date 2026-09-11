@@ -15,6 +15,8 @@ export type ClaimFailure<T extends ClaimProduct = ClaimProduct> = ClaimSuccess<T
   error: unknown
 }
 
+export type ExportDestination = 'clipboard' | 'download'
+
 export type ClaimTypeCount = {
   label: string
   count: number
@@ -34,8 +36,10 @@ export type ClaimReport<T extends ClaimProduct = ClaimProduct> = {
   failures: ClaimFailure<T>[]
   typeCounts: ClaimTypeCount[]
   keylessCount: number
-  exportCopied: boolean
+  exportDestination: ExportDestination
+  exportSucceeded: boolean
   exportEmpty: boolean
+  exportFilename: string | null
 }
 
 export type ClaimResultGroup<T extends ClaimProduct = ClaimProduct> = {
@@ -125,7 +129,10 @@ export const formatClaimLog = <T extends ClaimProduct>(report: ClaimReport<T>): 
     `Requested: ${requested}`,
     `Succeeded: ${report.successes.length}`,
     `Failed: ${report.failures.length}`,
-    `Export copied to clipboard: ${report.exportCopied ? 'Yes' : 'No'}`,
+    report.exportDestination === 'clipboard'
+      ? `Export copied to clipboard: ${report.exportSucceeded ? 'Yes' : 'No'}`
+      : `Export download started: ${report.exportSucceeded ? 'Yes' : 'No'}`,
+    ...(report.exportFilename ? [`Export filename: ${report.exportFilename}`] : []),
     `Keyless/direct-redemption items: ${report.keylessCount}`,
     '',
     'Type breakdown:',
@@ -145,5 +152,5 @@ export const formatClaimLog = <T extends ClaimProduct>(report: ClaimReport<T>): 
     }
   }
 
-  return lines.join('\n')
+  return `${lines.join('\n')}\n`
 }
