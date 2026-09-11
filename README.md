@@ -55,7 +55,8 @@ errors.
 
 Commits must follow [Conventional Commits](https://www.conventionalcommits.org/). A
 `commit-msg` git hook runs [commitlint](https://commitlint.js.org/) and rejects
-messages that don't parse:
+messages that don't parse. Pull request titles are checked in CI as well so
+squash merges keep a valid Conventional Commit subject:
 
 ```
 feat: add CSV column chooser
@@ -63,15 +64,16 @@ fix(table): correct expiry sort order
 feat!: drop support for Node 18
 ```
 
-`feat:` bumps the minor version, `fix:` the patch version, and a `!` suffix (or a
-`BREAKING CHANGE:` footer) bumps the major. Types other than `feat`/`fix`/`perf`/
-`revert` are kept out of the changelog.
+`feat:` bumps the minor version and `fix:` the patch version. Before `1.0.0`, a
+breaking change (`!` suffix or `BREAKING CHANGE:` footer) also bumps the minor
+version; from `1.0.0` onward, it bumps the major. Types other than
+`feat`/`fix`/`perf`/`revert` are kept out of the changelog.
 
 ## Releasing
 
 Releases are automated with
 [release-please](https://github.com/googleapis/release-please-action). Merging
-conventional commits to `main` keeps a "chore: release vX.Y.Z" pull request up to
+conventional commits to `main` keeps a "chore: release X.Y.Z" pull request up to
 date with the next version and the generated `CHANGELOG.md`.
 
 Merging that release PR bumps `package.json`, updates the changelog, and pushes
