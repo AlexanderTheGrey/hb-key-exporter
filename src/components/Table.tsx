@@ -1,5 +1,5 @@
 import { onCleanup, onMount, type Accessor, type Setter } from 'solid-js'
-import { isKeylessProduct } from '../claim-report'
+import { hasNonRetryableClaim, isKeylessProduct, markNonRetryableClaim } from '../claim-report'
 import { hasRedeemedKeyValue, serializeRedeemedKeyValue } from '../redeemed-key'
 import { captureProductReference, resolveProductReference } from '../product-reference'
 import {
@@ -15,6 +15,7 @@ import {
   clearSteamSupportNotice,
   copyToClipboard,
   redeem,
+  RedeemError,
   fetchRedeemedDate,
   setRedeemedDate,
   showErrorToast,
@@ -622,6 +623,7 @@ export function Table({
     const revealProduct = async (row: Product, gift: boolean): Promise<void> => {
       const keyless = isKeylessProduct(row)
       let keylessConfirmed = false
+      let currentProduct: Product | undefined
 
       try {
         const reference = captureProductReference(products, row)
@@ -637,8 +639,16 @@ export function Table({
         const beforeRedeem = latestProducts()
         if (!beforeRedeem) throw new Error('Product data is unavailable. Please try again.')
 
-        const currentProduct = resolveProductReference(reference, beforeRedeem)
+        currentProduct = resolveProductReference(reference, beforeRedeem)
         if (hasRedeemedKeyValue(currentProduct.redeemed_key_val) || currentProduct.is_gift) return
+
+        if (hasNonRetryableClaim(currentProduct, gift)) {
+          showFlashToast(
+            'Retry for this operation is disabled until the page is refreshed.',
+            'warning'
+          )
+          return
+        }
 
         const value = await redeem(currentProduct, gift)
 
@@ -668,7 +678,21 @@ export function Table({
           )
         }
       } catch (error) {
-        showErrorToast(error)
+        if (currentProduct && error instanceof RedeemError && error.nonRetryable) {
+          markNonRetryableClaim(currentProduct, gift)
+          currentDt()
+            ?.rows((_index, product) => product === currentProduct)
+            .invalidate('data')
+            .draw(false)
+
+          const message = error.message || 'Failed to reveal key'
+          showFlashToast(
+            `${message} Humble marked this attempt non-retryable. Retry for this operation is disabled until the page is refreshed.`,
+            'error'
+          )
+        } else {
+          showErrorToast(error)
+        }
       } finally {
         if (keylessConfirmed) finishKeylessRedemption()
       }
@@ -1004,6 +1028,8 @@ export function Table({
                 }
 
                 if (!hasRedeemedKeyValue(row.redeemed_key_val) && !row.is_gift) {
+                  const revealNonRetryable = hasNonRetryableClaim(row, false)
+                  const giftNonRetryable = hasNonRetryableClaim(row, true)
                   const revealTitle = keyless
                     ? row.is_expired
                       ? 'Attempt direct redemption to the linked account (marked expired); no transferable key will be shown'
@@ -1018,6 +1044,8 @@ export function Table({
                     : row.is_expired
                       ? 'Attempt gift-link creation (marked expired)'
                       : 'Create gift link'
+                  const nonRetryableTitle =
+                    'Non-retryable this session; refresh the page to try again'
 
                   actions.push(
                     hm(
@@ -1025,11 +1053,14 @@ export function Table({
                       {
                         class: styles.btn,
                         type: 'button',
+                        disabled: revealNonRetryable,
+                        title: revealNonRetryable ? nonRetryableTitle : revealTitle,
+                        'aria-label': revealNonRetryable ? nonRetryableTitle : revealTitle,
                         onclick: () => void revealProduct(row, false),
                       },
                       hm('i', {
                         class: keyless ? 'hb hb-link' : 'hb hb-magic',
-                        title: revealTitle,
+                        'aria-hidden': 'true',
                       })
                     ),
                     hm(
@@ -1037,11 +1068,14 @@ export function Table({
                       {
                         class: styles.btn,
                         type: 'button',
+                        disabled: giftNonRetryable,
+                        title: giftNonRetryable ? nonRetryableTitle : giftTitle,
+                        'aria-label': giftNonRetryable ? nonRetryableTitle : giftTitle,
                         onclick: () => void revealProduct(row, true),
                       },
                       hm('i', {
                         class: 'hb hb-gift',
-                        title: giftTitle,
+                        'aria-hidden': 'true',
                       })
                     )
                   )

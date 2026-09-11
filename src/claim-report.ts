@@ -1,9 +1,12 @@
 export interface ClaimProduct {
+  category_id: string
   category_human_name: string
   direct_redeem: boolean
   human_name: string
   is_expired?: boolean
+  keyindex?: number
   key_type: string
+  machine_name: string
 }
 
 export type ClaimSuccess<T extends ClaimProduct = ClaimProduct> = {
@@ -13,7 +16,10 @@ export type ClaimSuccess<T extends ClaimProduct = ClaimProduct> = {
 
 export type ClaimFailure<T extends ClaimProduct = ClaimProduct> = ClaimSuccess<T> & {
   error: unknown
+  nonRetryable: boolean
 }
+
+export type ClaimSkipped<T extends ClaimProduct = ClaimProduct> = ClaimSuccess<T>
 
 export type ExportDestination = 'clipboard' | 'download'
 
@@ -28,12 +34,14 @@ export type ClaimPlan<T extends ClaimProduct = ClaimProduct> = {
   keylessCount: number
   expiredCount: number
   bundleCount: number
+  skippedCount: number
 }
 
 export type ClaimReport<T extends ClaimProduct = ClaimProduct> = {
   gift: boolean
   successes: ClaimSuccess<T>[]
   failures: ClaimFailure<T>[]
+  skipped: ClaimSkipped<T>[]
   typeCounts: ClaimTypeCount[]
   keylessCount: number
   exportDestination: ExportDestination
@@ -46,25 +54,34 @@ export type ClaimResultGroup<T extends ClaimProduct = ClaimProduct> = {
   bundleName: string
   successes: ClaimSuccess<T>[]
   failures: ClaimFailure<T>[]
+  skipped: ClaimSkipped<T>[]
 }
 
 /**
- * Products whose reveal failed permanently this session, keyed by the same
- * identity used for product references. Humble keeps reporting these as
- * non-retryable, so they are excluded from later bulk reveals rather than
- * re-requested and re-failed every time.
+ * Reveal/gift operations Humble reported as non-retryable during this page
+ * session. This state intentionally lives only in memory so reloading the page
+ * always permits another attempt.
  */
-const permanentlyFailed = new Set<string>()
+const nonRetryableClaims = new Set<string>()
 
-const permanentFailureKey = (product: ClaimProduct): string =>
-  `${product.category_human_name}\u0000${product.human_name}\u0000${product.key_type}`
+const nonRetryableClaimKey = (product: ClaimProduct, gift: boolean): string =>
+  JSON.stringify([
+    product.category_id,
+    product.machine_name,
+    product.keyindex ?? null,
+    gift ? 'gift' : 'key',
+  ])
 
-export const markPermanentlyFailed = (product: ClaimProduct): void => {
-  permanentlyFailed.add(permanentFailureKey(product))
+export const markNonRetryableClaim = (product: ClaimProduct, gift: boolean): void => {
+  nonRetryableClaims.add(nonRetryableClaimKey(product, gift))
 }
 
-export const hasPermanentlyFailed = (product: ClaimProduct): boolean =>
-  permanentlyFailed.has(permanentFailureKey(product))
+export const hasNonRetryableClaim = (product: ClaimProduct, gift: boolean): boolean =>
+  nonRetryableClaims.has(nonRetryableClaimKey(product, gift))
+
+export const countNonRetryableFailures = <T extends ClaimProduct>(
+  failures: readonly ClaimFailure<T>[]
+): number => failures.reduce((count, failure) => count + Number(failure.nonRetryable), 0)
 
 export const getErrorMessage = (error: unknown): string =>
   error instanceof Error
@@ -86,7 +103,10 @@ export const getClaimTypeLabel = (product: ClaimProduct): string => {
   return type.charAt(0).toUpperCase() + type.slice(1)
 }
 
-export const createClaimPlan = <T extends ClaimProduct>(products: T[]): ClaimPlan<T> => {
+export const createClaimPlan = <T extends ClaimProduct>(
+  products: T[],
+  skippedCount = 0
+): ClaimPlan<T> => {
   const counts = new Map<string, number>()
   const bundles = new Set<string>()
   let keylessCount = 0
@@ -108,6 +128,7 @@ export const createClaimPlan = <T extends ClaimProduct>(products: T[]): ClaimPla
     keylessCount,
     expiredCount,
     bundleCount: bundles.size,
+    skippedCount,
   }
 }
 
@@ -115,58 +136,92 @@ export const groupClaimResults = <T extends ClaimProduct>(
   report: ClaimReport<T>
 ): ClaimResultGroup<T>[] => {
   const groups = new Map<string, ClaimResultGroup<T>>()
-  const results: Array<ClaimSuccess<T> | ClaimFailure<T>> = [
-    ...report.successes,
-    ...report.failures,
-  ].sort((left, right) => left.index - right.index)
+  const results = [
+    ...report.successes.map((result) => ({ kind: 'success' as const, result })),
+    ...report.failures.map((result) => ({ kind: 'failure' as const, result })),
+    ...report.skipped.map((result) => ({ kind: 'skipped' as const, result })),
+  ].sort((left, right) => left.result.index - right.result.index)
 
-  for (const result of results) {
+  for (const { kind, result } of results) {
     const bundleName = result.product.category_human_name || 'Unknown bundle'
     let group = groups.get(bundleName)
 
     if (!group) {
-      group = { bundleName, successes: [], failures: [] }
+      group = { bundleName, successes: [], failures: [], skipped: [] }
       groups.set(bundleName, group)
     }
 
-    if ('error' in result) {
-      group.failures.push(result)
-    } else {
-      group.successes.push(result)
-    }
+    if (kind === 'success') group.successes.push(result)
+    else if (kind === 'failure') group.failures.push(result)
+    else group.skipped.push(result)
   }
 
   return Array.from(groups.values())
 }
 
 export const formatClaimLog = <T extends ClaimProduct>(report: ClaimReport<T>): string => {
-  const requested = report.successes.length + report.failures.length
+  const attempted = report.successes.length + report.failures.length
+  const nonRetryableCount = countNonRetryableFailures(report.failures)
   const action = report.gift ? 'Gift-link creation' : 'Key reveal'
   const lines = [
     `${action} results`,
-    `Requested: ${requested}`,
+    `Attempted: ${attempted}`,
     `Succeeded: ${report.successes.length}`,
     `Failed: ${report.failures.length}`,
+    ...(nonRetryableCount ? [`  Non-retryable: ${nonRetryableCount}`] : []),
+    ...(report.skipped.length ? [`Skipped: ${report.skipped.length}`] : []),
     report.exportDestination === 'clipboard'
       ? `Export copied to clipboard: ${report.exportSucceeded ? 'Yes' : 'No'}`
       : `Export download started: ${report.exportSucceeded ? 'Yes' : 'No'}`,
     ...(report.exportFilename ? [`Export filename: ${report.exportFilename}`] : []),
     `Keyless/direct-redemption items: ${report.keylessCount}`,
-    '',
-    'Type breakdown:',
-    ...report.typeCounts.map(({ label, count }) => `- ${label}: ${count}`),
+    ...(report.typeCounts.length
+      ? [
+          '',
+          'Type breakdown:',
+          ...report.typeCounts.map(({ label, count }) => `- ${label}: ${count}`),
+        ]
+      : []),
   ]
+
+  if (nonRetryableCount || report.skipped.length) {
+    lines.push(
+      '',
+      'Items marked non-retryable are skipped for the rest of this page session. Refresh the page to try them again.'
+    )
+  }
 
   for (const group of groupClaimResults(report)) {
     lines.push('', `Bundle: ${group.bundleName}`)
+    const groupNonRetryableCount = countNonRetryableFailures(group.failures)
+    const groupSummary = [
+      `${group.successes.length} succeeded`,
+      ...(group.failures.length
+        ? [
+            `${group.failures.length} failed${
+              groupNonRetryableCount ? ` (${groupNonRetryableCount} non-retryable)` : ''
+            }`,
+          ]
+        : []),
+      ...(group.skipped.length ? [`${group.skipped.length} skipped`] : []),
+    ]
+    lines.push(`  Results: ${groupSummary.join(', ')}`)
 
     for (const { product } of group.successes) {
       lines.push(`  SUCCESS - ${product.human_name} [${getClaimTypeLabel(product)}]`)
     }
 
-    for (const { product, error } of group.failures) {
+    for (const { product, error, nonRetryable } of group.failures) {
       const type = getClaimTypeLabel(product)
-      lines.push(`  FAILED - ${product.human_name} [${type}]: ${getErrorMessage(error)}`)
+      const status = nonRetryable ? 'NON-RETRYABLE' : 'FAILED'
+      lines.push(`  ${status} - ${product.human_name} [${type}]: ${getErrorMessage(error)}`)
+    }
+
+    for (const { product } of group.skipped) {
+      const type = getClaimTypeLabel(product)
+      lines.push(
+        `  SKIPPED - ${product.human_name} [${type}]: Previously marked non-retryable this session. Refresh the page to try again.`
+      )
     }
   }
 

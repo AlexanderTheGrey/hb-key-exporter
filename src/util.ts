@@ -369,19 +369,14 @@ type RedeemResponse = {
   key?: unknown
 }
 
-/**
- * A failed reveal. `permanent` is true when Humble explicitly reported the
- * failure as non-retryable (`redeem_retryable: false`), which is how expired
- * keys are signalled. Retrying those always fails the same way, so callers can
- * use this to skip them instead of re-requesting on every bulk reveal.
- */
+/** A failed reveal response, including Humble's explicit retry signal when present. */
 export class RedeemError extends Error {
-  readonly permanent: boolean
+  readonly nonRetryable: boolean
 
-  constructor(message: string, permanent: boolean) {
+  constructor(message: string, nonRetryable: boolean) {
     super(message)
     this.name = 'RedeemError'
-    this.permanent = permanent
+    this.nonRetryable = nonRetryable
   }
 }
 
