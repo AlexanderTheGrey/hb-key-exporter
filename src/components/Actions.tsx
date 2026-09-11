@@ -2,11 +2,12 @@ import { createSignal, onCleanup, Show, type Accessor } from 'solid-js'
 import type { Api } from 'datatables.net-dt'
 import {
   createClaimPlan,
-  hasPermanentlyFailed,
-  markPermanentlyFailed,
+  hasNonRetryableClaim,
+  markNonRetryableClaim,
   type ClaimFailure,
   type ClaimPlan,
   type ClaimReport,
+  type ClaimSkipped,
   type ClaimSuccess,
   type ExportDestination,
 } from '../claim-report'
@@ -53,7 +54,7 @@ type PendingConfirmation = {
 }
 
 const claimProducts = async (
-  products: Product[],
+  claims: ClaimSuccess<Product>[],
   gift: boolean,
   onProgress?: (completed: number) => void
 ): Promise<{
@@ -64,7 +65,7 @@ const claimProducts = async (
   const failures: ClaimFailure<Product>[] = []
   let completed = 0
 
-  await forEachConcurrent(products, CLAIM_CONCURRENCY, async (product, index) => {
+  await forEachConcurrent(claims, CLAIM_CONCURRENCY, async ({ index, product }) => {
     try {
       product.redeemed_key_val = await redeem(product, gift)
       product.type = gift ? 'Gift' : 'Key'
@@ -72,8 +73,9 @@ const claimProducts = async (
       successes.push({ index, product })
     } catch (error) {
       console.error('Error redeeming product:', product.machine_name, error)
-      if (error instanceof RedeemError && error.permanent) markPermanentlyFailed(product)
-      failures.push({ index, product, error })
+      const nonRetryable = error instanceof RedeemError && error.nonRetryable
+      if (nonRetryable) markNonRetryableClaim(product, gift)
+      failures.push({ index, product, error, nonRetryable })
     } finally {
       onProgress?.(++completed)
     }
@@ -291,34 +293,48 @@ export function Actions({
     try {
       const initialSelection = table.rows({ search: 'applied' }).data().toArray() as Product[]
       const claimAsGift = claimType() === 'gift'
-      const claimable = claim()
-        ? initialSelection.filter(
-            (product) =>
-              !hasRedeemedKeyValue(product.redeemed_key_val) && !hasPermanentlyFailed(product)
-          )
+      const claimCandidates = claim()
+        ? initialSelection.filter((product) => !hasRedeemedKeyValue(product.redeemed_key_val))
         : []
+      const initiallyClaimable = claimCandidates.filter(
+        (product) => !hasNonRetryableClaim(product, claimAsGift)
+      )
+      const initiallySkippedCount = claimCandidates.length - initiallyClaimable.length
       let toExport = initialSelection
       let report: ClaimReport<Product> | null = null
 
-      if (claimable.length) {
+      if (claimCandidates.length) {
         const initialProducts = products()
         if (!initialProducts) throw new Error('Product data is unavailable. Please try again.')
 
         const selectionReferences = captureProductReferences(initialProducts, initialSelection)
-        const claimableReferences = captureProductReferences(initialProducts, claimable)
-        const plan = createClaimPlan(claimable)
-        const confirmed = await confirmBulkReveal(plan, claimAsGift, destination)
-        if (!confirmed) return
+        const candidateReferences = captureProductReferences(initialProducts, claimCandidates)
+        const plan = createClaimPlan(initiallyClaimable, initiallySkippedCount)
+
+        if (plan.products.length) {
+          const confirmed = await confirmBulkReveal(plan, claimAsGift, destination)
+          if (!confirmed) return
+        }
 
         // A Steam notice can schedule a product refresh while the confirmation is open. Resolve the
-        // exact confirmed rows against the newest product objects before revealing anything.
+        // exact selected rows against the newest product objects before revealing anything.
         await waitForProductRefresh()
         const latestBeforeClaim = products()
         if (!latestBeforeClaim) throw new Error('Product data is unavailable. Please try again.')
 
-        const currentClaimable = resolveProductReferences(claimableReferences, latestBeforeClaim)
+        const currentCandidates = resolveProductReferences(candidateReferences, latestBeforeClaim)
+        const currentClaims: ClaimSuccess<Product>[] = []
+        const skippedBeforeClaim: ClaimSkipped<Product>[] = []
+
+        currentCandidates.forEach((product, index) => {
+          const result = { index, product }
+          if (hasNonRetryableClaim(product, claimAsGift)) skippedBeforeClaim.push(result)
+          else currentClaims.push(result)
+        })
+
+        const actualPlan = createClaimPlan(currentClaims.map(({ product }) => product))
         const { successes, failures } = await claimProducts(
-          currentClaimable,
+          currentClaims,
           claimAsGift,
           setBulkRevealProgress
         )
@@ -331,19 +347,25 @@ export function Actions({
         if (!latestAfterClaim) throw new Error('Product data is unavailable. Please try again.')
 
         toExport = resolveProductReferences(selectionReferences, latestAfterClaim)
-        const latestClaimable = resolveProductReferences(claimableReferences, latestAfterClaim)
+        const latestCandidates = resolveProductReferences(candidateReferences, latestAfterClaim)
         const updated = new Set<Product>()
 
         const currentSuccesses: ClaimSuccess<Product>[] = successes.map(({ index, product }) => {
-          const latestProduct = latestClaimable[index]
+          const latestProduct = latestCandidates[index]
           applyRedeemedProductState(latestProduct, product)
           updated.add(latestProduct)
           return { index, product: latestProduct }
         })
-        const currentFailures: ClaimFailure<Product>[] = failures.map(({ index, error }) => ({
+        const currentFailures: ClaimFailure<Product>[] = failures.map(
+          ({ index, error, nonRetryable }) => {
+            const product = latestCandidates[index]
+            if (nonRetryable) updated.add(product)
+            return { index, product, error, nonRetryable }
+          }
+        )
+        const currentSkipped: ClaimSkipped<Product>[] = skippedBeforeClaim.map(({ index }) => ({
           index,
-          product: latestClaimable[index],
-          error,
+          product: latestCandidates[index],
         }))
 
         const currentTable = dt()
@@ -358,8 +380,9 @@ export function Actions({
           gift: claimAsGift,
           successes: currentSuccesses,
           failures: currentFailures,
-          typeCounts: plan.typeCounts,
-          keylessCount: plan.keylessCount,
+          skipped: currentSkipped,
+          typeCounts: actualPlan.typeCounts,
+          keylessCount: actualPlan.keylessCount,
           exportDestination: destination,
           exportSucceeded: false,
           exportEmpty: false,

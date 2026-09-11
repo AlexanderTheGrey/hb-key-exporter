@@ -1,5 +1,6 @@
 import { For, Show, type Accessor } from 'solid-js'
 import {
+  countNonRetryableFailures,
   formatClaimLog,
   getClaimTypeLabel,
   getErrorMessage,
@@ -323,6 +324,17 @@ export function BulkRevealConfirmation({
             </div>
           </Show>
 
+          <Show when={plan.skippedCount > 0}>
+            <div class={styles.modal_warning} role="status">
+              <strong>Previously non-retryable</strong>
+              <p>
+                {plan.skippedCount} {pluralize(plan.skippedCount, 'selected item')} will be skipped
+                because Humble previously indicated the operation should not be retried. This lasts
+                only for the current page session; refresh the page to allow another attempt.
+              </p>
+            </div>
+          </Show>
+
           <p class={styles.modal_note} aria-live="polite">
             {processing()
               ? 'Keep this window open while the reveal and export complete.'
@@ -371,7 +383,9 @@ export function BulkRevealResults({
   onClose: () => void
 }) {
   const groups = groupClaimResults(report)
-  const requested = report.successes.length + report.failures.length
+  const attempted = report.successes.length + report.failures.length
+  const nonRetryableCount = countNonRetryableFailures(report.failures)
+  const hasSessionSkips = nonRetryableCount > 0 || report.skipped.length > 0
   const log = formatClaimLog(report)
   let resultGroupsRef!: HTMLDivElement
   let dialogRef: HTMLElement | undefined
@@ -440,19 +454,52 @@ export function BulkRevealResults({
 
         <div class={styles.modal_body} data-modal-scroll-body>
           <div class={styles.result_summary} aria-live="polite">
-            <div class={styles.result_summary_item}>
-              <strong>{requested}</strong>
+            <div
+              class={styles.result_summary_item}
+              title="Reveal or gift-link operations attempted in this run."
+            >
+              <strong>{attempted}</strong>
               <span>Attempted</span>
             </div>
-            <div class={`${styles.result_summary_item} ${styles.result_success_summary}`}>
+            <div
+              class={`${styles.result_summary_item} ${styles.result_success_summary}`}
+              title="Reveal or gift-link operations that succeeded in this run."
+            >
               <strong>{report.successes.length}</strong>
               <span>Succeeded</span>
             </div>
-            <div class={`${styles.result_summary_item} ${styles.result_failure_summary}`}>
+            <div
+              class={`${styles.result_summary_item} ${styles.result_failure_summary}`}
+              title="Reveal or gift-link operations that returned an error, including non-retryable failures."
+            >
               <strong>{report.failures.length}</strong>
               <span>Failed</span>
+              <Show when={nonRetryableCount > 0}>
+                <span
+                  class={styles.result_summary_subcount}
+                  title="Included in Failed. Humble indicated these attempts should not be retried."
+                >
+                  {nonRetryableCount} non-retryable
+                </span>
+              </Show>
             </div>
+            <Show when={report.skipped.length > 0}>
+              <div
+                class={`${styles.result_summary_item} ${styles.result_skipped_summary}`}
+                title="Items not retried because the operation was already marked non-retryable this session. Refresh the page to try again."
+              >
+                <strong>{report.skipped.length}</strong>
+                <span>Skipped</span>
+              </div>
+            </Show>
           </div>
+
+          <Show when={hasSessionSkips}>
+            <p class={styles.result_session_note}>
+              Items marked non-retryable are skipped for the rest of this page session. Refresh the
+              page to allow another attempt.
+            </p>
+          </Show>
 
           <div
             class={`${styles.export_status} ${
@@ -508,17 +555,41 @@ export function BulkRevealResults({
               {(group) => (
                 <details
                   class={styles.result_bundle}
-                  open={groups.length === 1 || group.failures.length > 0}
+                  open={
+                    groups.length === 1 || group.failures.length > 0 || group.skipped.length > 0
+                  }
                 >
                   <summary>
                     <span>{group.bundleName}</span>
                     <span class={styles.result_bundle_counts}>
-                      <span class={styles.result_count_success}>
+                      <span
+                        class={styles.result_count_success}
+                        title="Reveal or gift-link operations that succeeded in this bundle during this run."
+                      >
                         {group.successes.length} succeeded
                       </span>
                       <Show when={group.failures.length > 0}>
-                        <span class={styles.result_count_failure}>
+                        <span
+                          class={styles.result_count_failure}
+                          title="Reveal or gift-link operations in this bundle that returned an error, including non-retryable failures."
+                        >
                           {group.failures.length} failed
+                          <Show when={countNonRetryableFailures(group.failures) > 0}>
+                            <span
+                              class={styles.result_count_detail}
+                              title="Included in Failed. Humble indicated these attempts should not be retried."
+                            >
+                              ({countNonRetryableFailures(group.failures)} non-retryable)
+                            </span>
+                          </Show>
+                        </span>
+                      </Show>
+                      <Show when={group.skipped.length > 0}>
+                        <span
+                          class={styles.result_count_skipped}
+                          title="Items not retried because the operation was already marked non-retryable this session. Refresh the page to try again."
+                        >
+                          {group.skipped.length} skipped
                         </span>
                       </Show>
                     </span>
@@ -550,7 +621,7 @@ export function BulkRevealResults({
                       <h4>Failed</h4>
                       <ul class={styles.result_list}>
                         <For each={group.failures}>
-                          {({ product, error }) => (
+                          {({ product, error, nonRetryable }) => (
                             <li class={styles.result_failure}>
                               <span class={styles.result_icon} aria-hidden="true">
                                 ×
@@ -558,7 +629,34 @@ export function BulkRevealResults({
                               <span>
                                 <strong>{product.human_name}</strong>
                                 <small>
+                                  <Show when={nonRetryable}>
+                                    <span class={styles.result_status_failure}>NON-RETRYABLE</span>{' '}
+                                    —{' '}
+                                  </Show>
                                   <ClaimType product={product} /> — {getErrorMessage(error)}
+                                </small>
+                              </span>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
+
+                    <Show when={group.skipped.length > 0}>
+                      <h4>Skipped</h4>
+                      <ul class={styles.result_list}>
+                        <For each={group.skipped}>
+                          {({ product }) => (
+                            <li class={styles.result_skipped}>
+                              <span class={styles.result_icon} aria-hidden="true">
+                                !
+                              </span>
+                              <span>
+                                <strong>{product.human_name}</strong>
+                                <small>
+                                  <span class={styles.result_status_skipped}>SKIPPED</span> —{' '}
+                                  <ClaimType product={product} /> — Previously marked non-retryable
+                                  this session. Refresh the page to try again.
                                 </small>
                               </span>
                             </li>
